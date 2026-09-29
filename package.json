@@ -1,0 +1,20 @@
+{
+  "name": "dsh-wsl-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "dsh-wsl: connect DeepSeek Harness to a WSL2 distribution and work inside its Linux workspaces",
+  "scripts": {
+    "test": "node --test tests/",
+    "probe": "node tests/probe-m1.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1-rc.4",
+    "@deepseek-ai/dsh-fs": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-sandbox": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-scope": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-subprocess": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "3.18.1-rc.4",
+    "zod": "^4.4.3"
+  }
+}

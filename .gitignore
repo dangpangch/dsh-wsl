@@ -1,0 +1,37 @@
+# ── Not part of the deliverable ────────────────────────────────────────────────
+
+# Reference packages downloaded from npm for study only (tools/fetch-ref.mjs).
+# Regenerate with: node tools/fetch-ref.mjs .scratch/ref <package...>
+.scratch/
+
+# Provisioned Node archive cache for the in-distribution helper.
+.cache/
+
+# ── Dependencies and build output ─────────────────────────────────────────────
+
+node_modules/
+
+# ── Local noise ───────────────────────────────────────────────────────────────
+
+*.log
+dsh-subprocess-*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor and OS clutter
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# ── Deliberately tracked ──────────────────────────────────────────────────────
+
+# .agents/skills/ IS committed: the ponytail skill is a deliberate, pinned
+# dependency of this repo (MIT, from DietrichGebert/ponytail), and
+# .agents/skills is a DSH skill root. Provenance and digests are recorded in
+# .agents/skills/ponytail-provenance.json and re-verifiable with:
+#   node tools/install-skills.mjs --check
+
+# pnpm-lock.yaml IS committed for the same reason: the @deepseek-ai seam
+# versions must match the installed DSH exactly (0.2.0-rc.2).

@@ -1,0 +1,11 @@
+packages:
+  - packages/*
+
+nodeLinker: hoisted
+autoInstallPeers: false
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/dsh-fs@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-sandbox@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-subprocess@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-util-values@0.2.0-rc.2'
+  - '@deepseek-ai/dsh-scope@0.2.0-rc.2'
