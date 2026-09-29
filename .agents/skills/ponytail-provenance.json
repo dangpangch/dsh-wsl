@@ -1,0 +1,45 @@
+{
+  "source": "https://github.com/DietrichGebert/ponytail",
+  "commit": "e3ba2aa6f1e6f0bc4d69eb09c9f0d0a93af56156",
+  "license": "MIT",
+  "installedAt": "2026-09-29T18:32:00.443Z",
+  "skills": [
+    {
+      "name": "ponytail",
+      "sha256": "1316a2f3f95741d2300b116fe0c2d81ce4a9568656ed0a62643f54aaf09957f2",
+      "gitBlobSha": "02c0712c86277d49d18a77da3a2b825657bf02d1"
+    },
+    {
+      "name": "ponytail-review",
+      "sha256": "40df33b58fc6ef889b93585733feb9566b76e9586efa7f376785c1e995197ac0",
+      "gitBlobSha": "e137a855bd87119a4517895a1000a59b0999e1b8"
+    },
+    {
+      "name": "ponytail-audit",
+      "sha256": "5560b8e383dbe2ddfddc873a1e2bf2e586e23e0cd7d995537482b2315331f6d1",
+      "gitBlobSha": "5582d10335daff5b5947f9b77927fbc97f2047f3"
+    },
+    {
+      "name": "ponytail-debt",
+      "sha256": "c84fba75f0ca12bfe83f9a78ea02fd125c5dd3f1fbb18124105a489937f284e6",
+      "gitBlobSha": "ecbc0ca8161b25ced3b4f728398c2ec33988a777"
+    },
+    {
+      "name": "ponytail-gain",
+      "sha256": "24e01d1c9715cb136ba1c4f1e52a95940c0193558b876828e537736480d6408b",
+      "gitBlobSha": "012e37b6bf31da1ed4bf936ec8aff53974d5291e"
+    },
+    {
+      "name": "ponytail-help",
+      "sha256": "2264d1615117b02b0fd5a69ec84cd2757006471a78e4d6c22eed6d581c1d37a4",
+      "gitBlobSha": "ba145c0ebb7c7e5682bb2f36047af3bf2030d470"
+    }
+  ],
+  "extras": [
+    {
+      "file": "LICENSE",
+      "sha256": "fb1bc6909ac3ef82d5c22106e32ef682b0cff66788fa915fb9b53b15c9d2f3ab"
+    }
+  ],
+  "note": "Installed by tools/install-skills.mjs. The portable skill set only; host-specific adapters were intentionally not installed."
+}
