@@ -1,0 +1,41 @@
+# Normalize line endings explicitly, because the developer default on Windows is
+# `core.autocrlf=true`, which would rewrite every checked-out file to CRLF.
+#
+# That default breaks this repository in two concrete ways, neither of them cosmetic:
+#
+#   1. tools/probe-distro.sh is PIPED TO BASH inside the distribution
+#      (`Get-Content -Raw tools/probe-distro.sh | wsl.exe -- bash -s`). CRLF makes bash
+#      read `;` and `$'\r'` as part of the command, so the script fails on line endings
+#      rather than on logic. Observed directly while probing the distribution.
+#   2. The helper is deployed into the distribution as loose files and its digest is
+#      verified after upload. A checkout that silently changes bytes would change that
+#      digest, so the same commit would verify on one machine and fail on another.
+#
+# Forcing LF keeps the working tree byte-identical across platforms.
+* text=auto eol=lf
+
+# Explicit for the file types where the distinction actually matters.
+*.sh    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.js    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+
+# PowerShell is CRLF-native on Windows; git should not touch it either way.
+*.ps1   text eol=crlf
+
+# Binary content must never be normalized.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.gif   binary
+*.ico   binary
+*.svg   text eol=lf
+*.node  binary
+
+# The provisioned Node archive, if a cache is ever committed by mistake.
+*.tar.xz binary
