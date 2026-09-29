@@ -1,0 +1,30 @@
+{
+  "name": "dsh-wsl-bundle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Whole-profile WSL2 mode for DeepSeek Harness: run the filesystem and subprocess seams inside a distribution",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "meta": {
+    "title": "WSL",
+    "description": "Run the Harness filesystem and processes inside a WSL2 distribution."
+  },
+  "dependencies": {
+    "@local/dsh-wsl": "workspace:*"
+  }
+}

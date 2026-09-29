@@ -1,0 +1,18 @@
+{
+  "wsl.title": "WSL",
+  "wsl.description": "Run the Harness filesystem and processes inside a WSL2 distribution.",
+  "wsl.status.connected": "Connected",
+  "wsl.status.disconnected": "Not connected",
+  "wsl.status.distro": "Distribution",
+  "wsl.status.user": "Linux user",
+  "wsl.status.helper": "Helper",
+  "wsl.status.error": "Last error",
+  "wsl.action.connect": "Connect",
+  "wsl.action.disconnect": "Disconnect",
+  "wsl.action.refresh": "Refresh",
+  "wsl.field.distro": "Distribution (leave empty for the default)",
+  "wsl.field.user": "Linux user (leave empty for the distribution default)",
+  "wsl.warning.root": "Running as root creates files the normal user may be unable to modify later.",
+  "wsl.warning.shared": "Local and WSL workspaces cannot run side by side in one profile.",
+  "wsl.empty": "No WSL distributions were found."
+}
