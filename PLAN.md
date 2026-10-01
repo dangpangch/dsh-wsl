@@ -388,7 +388,7 @@ ZCode 的范本：连接层上报断连（`ZCode-main/packages/server/src/remote
 | M5b sandbox + UI | **完成** | `tests/m5b-acceptance.mjs` **14/14 通过**；distro 内 bwrap 后端，M5a 的「沙箱只报告不强制」缺口已关闭 |
 | M5c 健壮性收口 | **完成** | `tests/m5c-acceptance.mjs` **11/11 通过**（1 项在无 TLS 出口环境下自报 SKIP）；§4.6.3 三项与 §4.6.7 全部落地，实施记录见「M5c 实施记录」 |
 | M6 Skill/MCP/Plugin 同步 | **完成** | 调查推翻了「同步管线」设想：seam 合规即同步。`tests/m6-acceptance.mjs` **6/6 通过**，见「M6 实施记录」 |
-| M7 打包与 `install_bundle` | 未开始 | — |
+| M7 打包与 `install_bundle` | **完成** | `tools/pack-bundle.mjs` + `tests/m7-acceptance.mjs` **4/4 通过**，见「M7 实施记录」 |
 
 ### 已交付的文件
 
@@ -419,6 +419,8 @@ tools/
   fetch-ref.mjs        # 从 npm 拉取参考包
   install-skills.mjs   # 按 commit + blob SHA 校验安装 ponytail skill
   sync-helper.mjs      # 同步 helper 侧协议副本（--check 用于 CI）
+  pack-bundle.mjs      # 组装自包含 install_bundle 目标（--check 用于 CI）
+  run-acceptance.mjs   # 顺序执行全部验收文件（npm test）
   probe-registry.mjs   # 探测 seam 包可用性
   probe-distro.sh      # distro 工具与网络探测
 tests/
@@ -429,12 +431,13 @@ tests/
   m5b-acceptance.mjs   # 14 项
   m5c-acceptance.mjs   # 12 项（含 1 项在无出口环境自报 SKIP）
   m6-acceptance.mjs    # 6 项
+  m7-acceptance.mjs    # 4 项
 ```
 
-**合计 141 项检查全绿。** 统一跑法：
+**合计 145 项检查全绿。** 统一跑法：
 
 ```powershell
-foreach ($m in @("m1","m2","m3","m5a","m5b","m5c","m6")) { node "tests\$m-acceptance.mjs" }
+npm test   # 等价于按序执行 m1…m7 全部验收文件
 ```
 
 ### M5b 实测确证的事实
@@ -470,6 +473,17 @@ M0 时代把 M6 想象成「把 skills/MCP/插件资产同步进 distro」的管
 - **已修的真实缺陷（Linux cwd 项目级 skills 静默丢失）**：skill 发现先用宿主 `path.resolve()` 规范化 cwd，把 Linux 路径 `/mnt/d/ws` 弄成 `D:\mnt\d\ws` 再交给 ctx.fs——不做处理则项目根永远找不到、项目 skills 全部静默消失。`windowsToLinux` 增加**双重错位还原**（`<drive>:\mnt\…` → `/mnt\…`），`mnt` 小写敏感以减少误伤；已知代价（真实的 Windows 目录恰好叫 `D:\mnt\…` 会被误译）以 `ponytail:` 注释钉在代码里。
 - **诚实的边界**：Chokidar 宿主 watch 无法 attach 到翻译后的 Linux 路径（有界重试、不致命）——目录变更失效仍经 tool-fs 发出的 `fs/observed` 事件（emitter 是工具层，provider 无需参与）；代价是外部 IDE/Git 改动对 skills 目录的感知降级为下次发现时刷新。文档宣称的「无重启感知新技能」在 WSL 模式下只对经第一方工具的变更加速。
 - **验收**：`tests/m6-acceptance.mjs` 按 skill-filesystem 的**真实调用序列**（resolve→stat→listDir→stat→processPath/readText）对本仓库 `.agents/skills`（ponytail 在列）与 `C:\Users\13409\.dsh` profile 实测，6/6 通过。
+
+### M7 实施记录：安装链路 = 一个自包含目录 + 官方 install_bundle 动作
+
+对 asar 内 `cordis-plugin-development` skill 的调查给出权威安装语义：安装 = `plugin_manager` 工具的 `action: install_bundle`、`target` 传**包目录绝对路径**——它负责 profile 的 package.json 写入与 pnpm 安装；官方示例 bundle（schedule/voice-input）证实清单契约就是 `dsh.bundle.patch`。**由此否决两包形态**：`dsh-wsl-bundle` 依赖 `@local/dsh-wsl: workspace:*`，profile 里的 pnpm 无法解析；发布私有 npm 又是无谓负担。而插件运行时只 import Node 内置模块（grep 证实 schemastery/zod/cordis 零运行时引用），所以：
+
+- **交付物 = 单个自包含包 `@local/dsh-wsl`**：`node tools/pack-bundle.mjs` 组装 `dist/dsh-wsl/`（index.js + lib/ + helper/ 保持相对形状、cordis.patch.yml、locale/、零依赖清单）。patch 行 `name` 与包名一致，无需任何改写。`--check` 模式供 CI。
+- **验证四层**：清单契约（patch 声明、无 dependencies）、patch 契约（四行 disabled + 插入行指向包名）、helper 三件齐全且与 lib/protocol.js 同步（剥离 GENERATED 头后逐字节比较——第一版逐字节比较被出处头误报，即修）、helper `.mjs` 过 `node --check`。
+- **THE PROOF**：m7 验收从**打包产物**动态导入 `index.js`、对真实 distro 调 `apply()`，provider 注册成功且完成一次真实文件操作——交给 `install_bundle` 的目录就是可工作的插件，不是会漂移的副本。
+- **实际安装步骤**（需要活的 DSH 会话，无法离线执行）：`node tools/pack-bundle.mjs` → 在目标 profile 的会话里让模型执行 `plugin_manager` `action: install_bundle`、`target` = 打印出的 `dist/dsh-wsl` 绝对路径 → 按 skill 文档用 `cordis_inspect_query` 确认 `fs`/`subprocess`/`sandbox` 行已生效。安装后 HMR 可能直接激活，否则重启 profile。
+- **顺带修掉 §4.6.6 的两个脚本问题**：`"test"` 从失效的 `node --test tests/`（Node v24 按.glob 处理位置参数）改为 `tools/run-acceptance.mjs` 显式顺序执行全部验收文件；删除指向已删文件的 `"probe"`。新增 `"pack-bundle"`。
+- **记录不动**：`dist/` 不入库（每次打包现场组装）；dev 侧双包结构保留供测试直接 import。
 
 ### M5b 诚实记录的代价与缺口
 

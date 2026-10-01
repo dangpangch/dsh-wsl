@@ -5,8 +5,8 @@
   "type": "module",
   "description": "dsh-wsl: connect DeepSeek Harness to a WSL2 distribution and work inside its Linux workspaces",
   "scripts": {
-    "test": "node --test tests/",
-    "probe": "node tests/probe-m1.mjs"
+    "test": "node tools/run-acceptance.mjs",
+    "pack-bundle": "node tools/pack-bundle.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1-rc.4",
