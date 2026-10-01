@@ -169,6 +169,13 @@ try {
     console.log(`        ${result.stdout.trim()}`)
   })
 
+  await check('the child gets a Linux PATH, not the host one', async () => {
+    const result = await run(subprocess, ['bash', '-c', 'printf %s "$PATH"'])
+    assert.equal(result.outcome.exitCode, 0, `exit code 0 (got ${result.outcome.exitCode})`)
+    assert.match(result.stdout, /^\//, `PATH is Linux-flavoured (got ${result.stdout})`)
+    assert.doesNotMatch(result.stdout, /\\/, 'no Windows separators leaked into the child PATH')
+  })
+
   await check('cwd is honoured inside the distribution', async () => {
     const result = await run(subprocess, ['pwd'], { spec: { cwd: '/var' } })
     assert.equal(result.stdout.trim(), '/var')

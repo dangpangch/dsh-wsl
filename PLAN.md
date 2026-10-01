@@ -253,7 +253,7 @@ export default SshConnection
 |---|---|---|
 | M0 契约定稿 | **完成** | §1–§4.5；参考实现已拉取到 `.scratch/ref/` |
 | M1 连接骨架 | **完成** | `tests/m1-acceptance.mjs` **28/28 通过**；`uname` 返回 `Linux 6.18.33.2-microsoft-standard-WSL2`，distro 为 Debian GNU/Linux 13 (trixie) |
-| M2 `dsh-wsl-subprocess` | **完成** | `tests/m2-acceptance.mjs` **17/17 通过** |
+| M2 `dsh-wsl-subprocess` | **完成** | `tests/m2-acceptance.mjs` **18/18 通过** |
 | M3 `dsh-wsl-fs` | **完成** | `tests/m3-acceptance.mjs` **52/52 通过** |
 | M4 作用域路由 | **已废弃** —— realm 机制与 DSH 架构冲突（§6.5），代码已删除 | 结论保留在 §6.5 |
 | M5a 整 profile 切换到 WSL | **完成** | `tests/m5a-acceptance.mjs` **11/11 通过** |
@@ -298,11 +298,13 @@ tests/
   m5a-acceptance.mjs   # 11 项
 ```
 
-**合计 108 项检查全绿。** 统一跑法：
+**合计 109 项检查全绿。** 统一跑法：
 
 ```powershell
 foreach ($m in @("m1","m2","m3","m5a")) { node "tests\$m-acceptance.mjs" }
 ```
+
+> 2026-10-01 修复：`process.spawn` 曾把宿主 Windows `PATH` 原样转发进 distro 子进程，裸名命令按它解析必然 ENOENT（实测 exit -2、无 stderr）。现 host 侧不再转发宿主 `PATH`（`lib/subprocess.js`），helper 侧默认给子进程注入自己的 Linux `PATH`（`helper/wsl-helper.mjs`，与 `exec.resolve` 同一模式）；显式 spec `PATH` 仍然优先。回归守卫：`the child gets a Linux PATH, not the host one`。
 
 ### M4 review 发现的缺陷（已修，含回归守卫）
 

@@ -345,9 +345,13 @@ function createProcessTable(ranges, table) {
       const stdoutIsCollect = typeof stdout === 'object' && stdout !== null
       const stderrIsCollect = typeof stderr === 'object' && stderr !== null
 
+      // Bare names are resolved against the child's PATH. The host's PATH is
+      // Windows-flavoured and useless here, so the helper's own PATH is the
+      // default; an explicit env PATH still wins.
+      const childEnv = { PATH: process.env.PATH, ...env }
       const child = spawnProcess(argv[0], argv.slice(1), {
         cwd,
-        env,
+        env: childEnv,
         stdio: [
           wantStdinPipe ? 'pipe' : 'ignore',
           stdout === 'inherit' || stdout === 'pipe' ? 'pipe' : 'pipe',

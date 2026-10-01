@@ -447,10 +447,15 @@ export class WslSubprocess {
         stdout: isCollect(spec.stdio.stdout) ? { maxBytes: spec.stdio.stdout.maxBytes } : 'ignore',
         stderr: isCollect(spec.stdio.stderr) ? { maxBytes: spec.stdio.stderr.maxBytes } : 'ignore',
       }
+      // The host PATH is Windows-flavoured; forwarding it can only break
+      // bare-name lookup inside the distribution. The helper defaults the
+      // child's PATH to its own, and an explicit spec PATH still wins.
+      const base = scrubbedEnv()
+      delete base.PATH
       const started = await connection.request('process.spawn', {
         argv: [...spec.argv],
         cwd: spec.cwd,
-        env: { ...scrubbedEnv(), ...normalizeEnv(spec.env) },
+        env: { ...base, ...normalizeEnv(spec.env) },
         stdin: stdio.stdin,
         stdout: stdio.stdout,
         stderr: stdio.stderr,
