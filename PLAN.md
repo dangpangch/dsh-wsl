@@ -292,7 +292,7 @@ dsh-wsl 的部署幂等只在**进程内**（`setup ??=`，`lib/provider.js:119`
 
 ZCode 对同一问题有完整答案，且它的注释恰好点出同一情形：进程内 single-flight **无法**覆盖不同 Desktop/build/backend（`ZCode-main/packages/server/src/remote/deploy.ts:439`），实现见 `remoteDeployLock.ts`。
 
-> 2026-10-01 复核：仍未修。M5b 的 `ensureBwrap` 把同一模式复制到了第二个资产。另发现 Windows 侧子问题：`fetchNodeArchive`/`ensureBwrap` 的暂存路径固定为 `archivePath.partial`（`lib/connection.js:588-590`、`:783-785`），两进程并发下载会交叉写入同一暂存文件、rename 发布损坏归档——读缓存时的 SHA 校验能自愈但浪费；修互斥锁时应改用带 pid/随机的暂存名。
+> 2026-10-01 复核：仍未修。M5b 的 `ensureBwrap` 把同一模式复制到了第二个资产。另发现 Windows 侧子问题：`fetchNodeArchive`/`ensureBwrap` 的暂存路径固定为 `archivePath.partial`（`lib/connection.js:588-590`、`:783-785`），两进程并发下载会交叉写入同一暂存文件、rename 发布损坏归档——读缓存时的 SHA 校验能自愈但浪费；修互斥锁时应改用带 pid/随机的暂存名。**→ 均已由 M5c-3 修复（`withProvisionLock` + 带 pid 暂存名）。**
 
 **2. `bash -lc` 多行脚本会被提前展开 —— 疑似真实缺陷，待实测 [高]**
 
@@ -312,7 +312,7 @@ ZCode 为此发明了两个绕法（八进制编码落盘、按字节上传替�
 
 即：**唯一含 shell 变量的脚本恰好是唯一没有测试的策略**，且形状正落在 ZCode 记录的失效模式上。若 ZCode 的结论在本机成立，`distro` 策略会**响亮地失败**（`curl` 得到被展开为空的路径）而非静默错误。**[推断]** —— 本仓库的 m1/m2/m3/m5b 全部显式使用 `strategy: 'push'` 或省略（默认 `push`），**`distro` 与 `existing` 两个策略从未被任何验收脚本执行过**（`tests/m1-acceptance.mjs:251`、`tests/m2-acceptance.mjs:116`、`tests/m3-acceptance.mjs:154`）。
 
-> 2026-10-01 复核：维持原结论——仍未实测、仍未修（grep 证实验收脚本仍全部 `push`）。
+> 2026-10-01 复核：维持原结论——仍未实测、仍未修（grep 证实验收脚本仍全部 `push`）。**→ M5c-4 已实测确证并修复：脚本改为变量自由，探针结论钉在 m5c 的 THE TRANSPORT FACT 检查里。**
 
 **3. 「默认 distro」未归一 —— 会造成重复部署 [中]**
 
@@ -326,7 +326,7 @@ const runtimeDir = `${homeDir}/.local/share/dsh-wsl/${distro}`   // distro === '
 
 于是「不填 distro 连一次」与「填 `debian` 连一次」落到**两个目录**（`…/dsh-wsl/` 与 `…/dsh-wsl/debian`），各下载一份归档、各部署一份 helper、各下载一份 bwrap `.deb`。讽刺的是 `parseDistributionList` 已经解析出 `default: true`（`lib/connection.js:176`），做归一化是现成的。所有验收脚本都传真实 distro 名（m1:249、m5a:104/129、m5b:116），**空 distro 路径同样无覆盖**。
 
-> 2026-10-01 复核：仍未修，且影响面扩大——M5b 后同一空段路径有三处消费（node `lib/connection.js:633`、helper `:836`、bwrap `:750`）。修复会把 `listDistributions` 带进连接路径，而它现在每次调用都全新 spawn `wsl.exe -l -v`（`lib/connection.js:151-154`），届时应按 ZCode 的 5 秒 TTL 缓存（`ZCode-main/packages/server/src/remote/wsl-detect.ts:8`）。
+> 2026-10-01 复核：仍未修，且影响面扩大——M5b 后同一空段路径有三处消费（node `lib/connection.js:633`、helper `:836`、bwrap `:750`）。修复会把 `listDistributions` 带进连接路径，而它现在每次调用都全新 spawn `wsl.exe -l -v`（`lib/connection.js:151-154`），届时应按 ZCode 的 5 秒 TTL 缓存（`ZCode-main/packages/server/src/remote/wsl-detect.ts:8`）。**→ M5c-2 已修；TTL 缓存最终未加——归一化只在 `setup ??=` 内执行一次，连接生命周期内没有重复调用可缓存（YAGNI）。**
 
 ### 4.6.4 不适用（照搬会有害）
 
@@ -350,7 +350,7 @@ const runtimeDir = `${homeDir}/.local/share/dsh-wsl/${distro}`   // distro === '
 
 对本节做了一次复审：§4.6.1–§4.6.6 引用的每一条 ZCode 证据都到源码重新核对（**全部属实**，含 `remoteDeployLock.ts:84-86` 的展开注释、`deploy.ts:438-441` 的 single-flight 注释、`zcodeAgentWrapperDeploy.ts:20-33` 的按字节上传），并通读了本仓库当前实现（`connection/provider/fs/subprocess/sandbox/index`）。复审发现：**三个借鉴项至今无一进入里程碑排期**，以及一个本节原本没有覆盖、恰好落在「ZCode 处理得最完整的领域」（断连检测与恢复）的真实回归。
 
-**0. 死连接缓存回归 —— M4 教训在 M5a 重写中丢失 [高，未修]**
+**0. 死连接缓存回归 —— M4 教训在 M5a 重写中丢失 [高 → M5c-1 已修]**
 
 M4 review 曾修过「`connect()` 永久缓存已 resolve 的值」（§6 缺陷表），但修复代码在被 M5a 删除的 `lib/realm.js` 里，**没有迁移到 `createWslRuntime`**。现状是三层缓存咬住死连接：
 
@@ -386,7 +386,7 @@ ZCode 的范本：连接层上报断连（`ZCode-main/packages/server/src/remote
 | M4 作用域路由 | **已废弃** —— realm 机制与 DSH 架构冲突（§6.5），代码已删除 | 结论保留在 §6.5 |
 | M5a 整 profile 切换到 WSL | **完成** | `tests/m5a-acceptance.mjs` **11/11 通过** |
 | M5b sandbox + UI | **完成** | `tests/m5b-acceptance.mjs` **14/14 通过**；distro 内 bwrap 后端，M5a 的「沙箱只报告不强制」缺口已关闭 |
-| M5c 健壮性收口 | 未开始 | 2026-10-01 审查产出（§4.6.7）：死连接恢复 ＋ 部署互斥与暂存名（§4.6.3-1）＋ `distro` 策略实测（§4.6.3-2）＋ distro 归一化（§4.6.3-3）＋ 三个小缺口；**排在 M6 前**，优先级：死连接 > 互斥 > 策略实测 > 归一化 |
+| M5c 健壮性收口 | **完成** | `tests/m5c-acceptance.mjs` **11/11 通过**（1 项在无 TLS 出口环境下自报 SKIP）；§4.6.3 三项与 §4.6.7 全部落地，实施记录见「M5c 实施记录」 |
 | M6 Skill/MCP/Plugin 同步 | 未开始 | — |
 | M7 打包与 `install_bundle` | 未开始 | — |
 
@@ -427,12 +427,13 @@ tests/
   m3-acceptance.mjs    # 52 项
   m5a-acceptance.mjs   # 11 项
   m5b-acceptance.mjs   # 14 项
+  m5c-acceptance.mjs   # 11 项（含 1 项在无出口环境自报 SKIP）
 ```
 
-**合计 123 项检查全绿。** 统一跑法：
+**合计 134 项检查全绿。** 统一跑法：
 
 ```powershell
-foreach ($m in @("m1","m2","m3","m5a","m5b")) { node "tests\$m-acceptance.mjs" }
+foreach ($m in @("m1","m2","m3","m5a","m5b","m5c")) { node "tests\$m-acceptance.mjs" }
 ```
 
 ### M5b 实测确证的事实
@@ -443,6 +444,19 @@ foreach ($m in @("m1","m2","m3","m5a","m5b")) { node "tests\$m-acceptance.mjs" }
 - **`--tmpfs /tmp` 的语义边界**：workspace-write 下 `/tmp` 是每次 confinement 独立的 tmpfs —— 私有临时目录可写，但不持久、也不与 `ctx.fs` 共享；持久的工作区写在 `workspaceRoot`（消费方按 seam 传 canonical 路径）。因此验收测试的 workspace 放在 home 下。
 - **workspaceRoot 在 helper 侧 realpath 化**：bind 落在真实 inode 上，符号链接根也被正确授写；`--ro-bind /` 之下 home 内的链接在沙箱内仍可见（`/tmp` 下的链接则被 tmpfs 藏掉 —— 见上一条）。
 - **供给幂等**：`ensureBwrap` 与 `ensureRuntime` 同模式 —— 已部署且可执行则复用；Windows 侧缓存 `.deb` 并按固定 SHA-256 校验后原子发布。
+
+### M5c 实施记录与实测确证的事实
+
+M5c 按审查排期分四个 commit 落地（死连接恢复 → distro 归一化 → 互斥锁 → 传输修复）。
+
+- **死连接恢复（§4.6.7-0）**：`connection.onClose` 清 `setup`/`connection` 缓存；fs/subprocess 的 `connection()` 对已 resolve 但已死的连接丢弃重连。回归守卫在 kill helper 后断言 `start()` 重建出**新 pid** 的连接、fs 消费者下一次操作成功；fs 层守卫被验证在撤销 fs.js 修复时确实变红（不是同义反复）。
+- **THE TRANSPORT FACT（§4.6.3-2 从推断升级为确证）**：探针实测 `x=hi; printf %s "$x"` 与 `y=$(echo sub)` 经 `wsl.exe -- bash -lc` 后都返回**空串**——局部变量确实在真正的 shell 执行前被外层默认 shell 展开为空，ZCode 的记录在本机成立。`distro` 策略脚本改为纯 host 计算的带引号字面量（顺手删掉了 mktemp 机制）；测试钉住这一平台事实；distro 内无 TLS 出口时该策略检查自报 SKIP 而非失败。
+- **启动引号新事实**：helper 启动从多 argv 改为**单条 `bash -lc` 命令**。原多 argv 形态在路径含空格时坏掉：Node 的 Windows 命令行 join 把单引号元素再包一层**双引号**，wsl.exe 交给默认 shell 后双引号被剥掉、字面单引号留在文件名里 → `ENOENT`（127）。这是 spaced-home 检查当场抓到的真实 bug，不是理论推演。
+- **互斥锁（§4.6.3-1）**：`withProvisionLock` 用 POSIX `mkdir` 原子性做 distro 侧锁（约 40 行）：胜者供给、败者轮询、超过 5 分钟视为死持有者夺锁；并发串行化与夺锁都有实测检查。第一版漏了父目录 `mkdir -p`，全新 home 上锁目录永远建不出来、等待者误判 busy 等满超时——被 spaced-home 检查抓住后修复。Windows 侧下载暂存名带 pid，并发下载不再互写同一 `.partial`。
+- **归一化（§4.6.3-3）**：空 distro 在 `start()` 内解析为系统默认的真实名字（`default` 标记优先，否则第一个），node/helper/bwrap 三件套全部落进 canonical 的 `~/.local/share/dsh-wsl/<distro>/` 目录；`runtime.distro` getter 供 fs 的 UNC 映射经 thunk 读取（空 distro 不再退化成 `\\wsl$\localhost\…`）。
+- **stderr 双解码（§4.6.7-1）**：`runInDistro` 的 stdout/stderr 统一走 `decodeWslText`。
+- **出口事实更新**：本环境 distro 内对 nodejs.org 的 TLS 也被阻断（`curl (35) unexpected eof`），与 M2 记录的 `registry.npmjs.org` 阻断同类——`push` 默认策略再次被证明是正确选型。会话末期主机侧对 nodejs.org 也出现 TLS 拦截（`SEC_E_WRONG_PRINCIPAL`），因此 spaced-home 检查改为从 canonical 树 `cp -a` 预置、`distro` 策略检查自报 SKIP，整套 m5c 对主机出网零依赖。
+- **记录不动（§4.6.7-3）**：一次性 provisioning 子进程仍不被 dispose 追踪——按审查结论维持「只记录」，危害上界是写完部署目录后被 reuse 检查收敛。
 
 ### M5b 诚实记录的代价与缺口
 
