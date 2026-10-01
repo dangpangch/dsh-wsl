@@ -102,7 +102,7 @@ await check('with the slot free, the WSL providers register', async () => {
   const cacheDir = await mkdtemp(path.join(tmpdir(), 'dsh-wsl-m5a-unit-'))
   try {
     const runtime = createWslRuntime({ distro: 'debian', cacheDir, helperSourceDir: HELPER_SOURCE_DIR })
-    const { fs, subprocess } = provideHostServices(root, runtime, { distro: 'debian' })
+    const { fs, subprocess } = provideHostServices(root, runtime)
     assert.equal(root.get('fs'), fs, 'the filesystem service resolves the WSL provider')
     assert.equal(root.get('subprocess'), subprocess, 'the subprocess service resolves the WSL provider')
     await runtime.dispose()

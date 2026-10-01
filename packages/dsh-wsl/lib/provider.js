@@ -114,14 +114,29 @@ export function createWslRuntime(options) {
   /** @type {Error|undefined} */
   let lastError
   let homeDir
+  /** Resolved distribution name; empty until start() resolved the configured default. */
+  let distroName = ''
 
   const start = () => {
     setup ??= (async () => {
-      onLog(`resolving the Linux home for ${options.distro || 'the default distribution'}`)
-      homeDir = options.homeDir ?? (await resolveHome({ distro: options.distro, user: options.user }))
+      // An empty configured distro means "the system default". Resolve it to the real name
+      // once, so every deployment path (node, helper, bwrap) lands in one canonical
+      // `~/.local/share/dsh-wsl/<distro>/` directory shared with explicit connections.
+      if (!options.distro) {
+        const distributions = await listDistributions()
+        const picked = distributions.find((d) => d.default) ?? distributions[0]
+        if (!picked) {
+          throw new Error('dsh-wsl: no WSL distribution is installed')
+        }
+        distroName = picked.name
+        onLog(`no distro configured; using the system default "${distroName}"`)
+      } else {
+        distroName = options.distro
+      }
+      homeDir = options.homeDir ?? (await resolveHome({ distro: distroName, user: options.user }))
 
       const runtime = await ensureRuntime({
-        distro: options.distro,
+        distro: distroName,
         user: options.user,
         homeDir,
         strategy: runtimeStrategy,
@@ -129,17 +144,17 @@ export function createWslRuntime(options) {
         onLog,
       })
       const deployed = await deployHelper({
-        distro: options.distro,
+        distro: distroName,
         user: options.user,
         homeDir,
         sourceDir: helperSourceDir,
       })
       onLog(`helper deployed (${deployed.helperHash.slice(0, 12)}…)`)
       onLog('provisioning the sandbox backend')
-      await ensureBwrap({ distro: options.distro, user: options.user, homeDir, cacheDir, onLog })
+      await ensureBwrap({ distro: distroName, user: options.user, homeDir, cacheDir, onLog })
 
       connection = new WslConnection({
-        distro: options.distro,
+        distro: distroName,
         user: options.user,
         helperPath: deployed.helperPath,
         nodePath: runtime.nodePath,
@@ -169,6 +184,10 @@ export function createWslRuntime(options) {
 
   return {
     start,
+    /** The configured distribution, or the resolved system default once known. */
+    get distro() {
+      return distroName || options.distro || ''
+    },
     status() {
       return {
         wireVersion: WIRE_VERSION,
@@ -198,19 +217,19 @@ export function createWslRuntime(options) {
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx host context that owns the services
  * @param {ReturnType<typeof createWslRuntime>} runtime
- * @param {object} options
- * @param {string} options.distro distribution name, for host-path mapping
  * @returns {{fs: object, subprocess: WslSubprocess, sandbox: WslSandbox, disposers: Array<() => unknown>}}
  */
-export function provideHostServices(ctx, runtime, options) {
+export function provideHostServices(ctx, runtime) {
   const connect = async () => (await runtime.start()).connection
 
   // Both providers open the connection lazily, so registration is synchronous while the
   // actual provisioning stays on the first real operation. The filesystem's relative base is
   // resolved only when a relative path is first used, so registering performs no I/O.
+  // The distro name reads through the runtime so host-path UNC mapping gets the resolved
+  // default, not the empty configured value.
   const fs = new WslFileSystem({
     connect,
-    distro: options.distro,
+    distro: () => runtime.distro,
     defaultCwd: async () => (await runtime.start()).cwd,
   })
   const subprocess = new WslSubprocess({ connect })

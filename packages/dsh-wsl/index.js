@@ -73,7 +73,7 @@ export function apply(ctx, config = {}) {
   // Registered synchronously so every `inject(['fs'])` / `inject(['subprocess'])` /
   // `inject(['sandbox'])` consumer resolves this composition's providers. The
   // connection itself is opened lazily.
-  const { fs, subprocess, sandbox, disposers } = provideHostServices(ctx, runtime, { distro })
+  const { fs, subprocess, sandbox, disposers } = provideHostServices(ctx, runtime)
 
   const api = {
     /** Distribution inventory, for the settings page and the workspace picker. */

@@ -138,7 +138,9 @@ export class WslFileSystem {
   /**
    * @param {object} options
    * @param {() => Promise<import('./connection.js').WslConnection>} options.connect
-   * @param {string} options.distro
+   * @param {string|(() => string)} options.distro
+   *   distribution name for host-path UNC mapping; a thunk resolves it lazily (the
+   *   configured default is only known after connecting)
    * @param {string} [options.cwd] fixed default base for relative paths
    * @param {() => Promise<string>} [options.defaultCwd]
    *   base resolved on demand, used when it is only known after connecting (the Linux home)
@@ -322,7 +324,8 @@ export class WslFileSystem {
    * @returns {string|undefined}
    */
   hostPath(target) {
-    return linuxToWindows(this.processPath(target), this.distro)
+    const distro = typeof this.distro === 'function' ? this.distro() : this.distro
+    return linuxToWindows(this.processPath(target), distro)
   }
 
   /**

@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 
 import { createWslRuntime, provideHostServices, HELPER_SOURCE_DIR } from '../packages/dsh-wsl/lib/provider.js'
-import { listDistributions } from '../packages/dsh-wsl/lib/connection.js'
+import { listDistributions, runWsl } from '../packages/dsh-wsl/lib/connection.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DISTRO = process.env.DSH_WSL_DISTRO || 'debian'
@@ -102,7 +102,7 @@ try {
 
   await check('THE PROVIDER: a filesystem consumer recovers on its next operation', async () => {
     const root = new Context()
-    const { fs } = provideHostServices(root, runtime, { distro: target.name })
+    const { fs } = provideHostServices(root, runtime)
 
     // Cache a live connection, then kill the helper out from under it.
     const first = await fs.resolve('~', { cwd: '/' })
@@ -124,6 +124,38 @@ try {
     assert.equal(state.connection.closed, false)
     await runtime.dispose()
     assert.equal(runtime.status().connected, false)
+  })
+
+  await check('THE NORMALIZATION: an empty configured distro resolves to the canonical target', async () => {
+    // No distro configured: must resolve to the system default and land every deployed
+    // asset in the SAME ~/.local/share/dsh-wsl/<distro>/ tree an explicit connection uses —
+    // not in a trailing-empty-segment sibling directory with its own duplicate deployment.
+    const defaultRuntime = createWslRuntime({
+      cacheDir,
+      helperSourceDir: HELPER_SOURCE_DIR,
+    })
+    try {
+      const state = await defaultRuntime.start()
+      assert.equal(defaultRuntime.distro, target.name, 'the default resolved to the real name')
+
+      // The canonical tree holds the helper this connection is actually talking to.
+      const helperOnCanonicalPath = `${state.homeDir}/.local/share/dsh-wsl/${target.name}/helper/wsl-helper.mjs`
+      const probe = await runWsl([
+        '-d',
+        target.name,
+        '--',
+        'bash',
+        '-lc',
+        `test -f '${helperOnCanonicalPath}' && printf PRESENT`,
+      ])
+      assert.equal(
+        probe.stdout.toString('utf8').trim(),
+        'PRESENT',
+        'the default-distro connection deployed into the canonical directory',
+      )
+    } finally {
+      await defaultRuntime.dispose()
+    }
   })
 } catch (error) {
   failures++
