@@ -37,3 +37,25 @@ export const NODE_DIST_BASE = 'https://nodejs.org/dist'
 export function nodeArchiveUrl(base = NODE_DIST_BASE) {
   return `${base.replace(/\/$/, '')}/${NODE_VERSION}/${NODE_ARCHIVE}`
 }
+
+/**
+ * Pinned bubblewrap package for the in-distribution sandbox backend.
+ *
+ * The distro is Debian 13 (trixie); this is trixie's own `bubblewrap` build, taken
+ * from deb.debian.org. The checksum was computed from the downloaded package at pin
+ * time (the pool offers no published per-file checksum list); a mismatch refuses
+ * deployment rather than running an unverified binary. Only `usr/bin/bwrap` is
+ * extracted into the user's deploy directory — nothing is installed system-wide,
+ * and the dependencies it needs (libc6, libcap2, libselinux1) are already in any
+ * Debian 13 base system.
+ */
+export const BWRAP_DEB = Object.freeze({
+  /** Debian pool archive filename. */
+  archive: 'bubblewrap_0.12.0-1~deb13u1_amd64.deb',
+  version: '0.12.0',
+  sha256: '70aca4fa8daeacb677ec00e8063eb586f08ae3d94b1f11e684370b5524c43431',
+  url: 'https://deb.debian.org/debian/pool/main/b/bubblewrap/bubblewrap_0.12.0-1~deb13u1_amd64.deb',
+})
+
+/** In-distribution path of the deployed bwrap binary, relative to the deploy root. */
+export const BWRAP_BIN_PATH = 'bwrap/usr/bin/bwrap'

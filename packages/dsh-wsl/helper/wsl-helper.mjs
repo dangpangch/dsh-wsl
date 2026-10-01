@@ -21,18 +21,19 @@
  *
  * @module @local/dsh-wsl/helper
  */
-import { spawn as spawnProcess } from 'node:child_process'
+import { spawn as spawnProcess, spawnSync } from 'node:child_process'
 import {
   accessSync,
   appendFileSync,
   constants as FS_CONSTANTS,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import process from 'node:process'
 
 import {
@@ -805,7 +806,116 @@ function createMethods(ranges) {
       const files = await walkFiles(targetKey, { maxEntries, maxDepth, includeHidden })
       return { files, truncated: files.length >= (maxEntries ?? 20_000) }
     },
+
+    /* ---------------------------------------------------------------------- */
+    /* sandbox                                                                */
+    /* ---------------------------------------------------------------------- */
+
+    /**
+     * Wrap one argv in the bwrap profile for a file-effect policy.
+     *
+     * The profile is the same dialect `dsh-sandbox-local` speaks on Linux, so
+     * denial matching and runner-failure classification stay identical whether a
+     * session is confined by the host backend or by this one. Fail closed: an
+     * unusable runner is `SANDBOX_UNAVAILABLE`, never an unwrapped argv.
+     */
+    'sandbox.confine': ({ argv, mode, workspaceRoot, bwrapPath }) => {
+      if (
+        !Array.isArray(argv) ||
+        argv.length === 0 ||
+        argv.some((part) => typeof part !== 'string' || part.length === 0)
+      ) {
+        throw new HelperError(HelperErrorCode.INVALID_PARAMS, 'argv must be a non-empty array of strings')
+      }
+      if (mode !== 'read-only' && mode !== 'workspace-write') {
+        throw new HelperError(
+          HelperErrorCode.INVALID_PARAMS,
+          `mode must be "read-only" or "workspace-write" (got ${JSON.stringify(mode)})`,
+        )
+      }
+      if (typeof workspaceRoot !== 'string' || !workspaceRoot.startsWith('/')) {
+        throw new HelperError(HelperErrorCode.INVALID_PARAMS, 'workspaceRoot must be an absolute Linux path')
+      }
+
+      const runner = typeof bwrapPath === 'string' && bwrapPath ? bwrapPath : defaultBwrapPath()
+      if (!existsExecutable(runner)) {
+        throw sandboxUnavailable(`no sandbox runner at ${runner}`)
+      }
+      if (bwrapUsable === undefined) bwrapUsable = probeBwrap(runner)
+      if (!bwrapUsable) {
+        throw sandboxUnavailable(`${runner} could not apply a read-only profile on this kernel`)
+      }
+
+      // Canonicalize so the bind grant covers the real inode: a symlinked workspace
+      // would otherwise be writable outside the bind and read-only through it.
+      let root = workspaceRoot
+      try {
+        root = realpathSync(root)
+      } catch {
+        /* a not-yet-created root is bwrap's refusal to give, not ours to invent */
+      }
+
+      const profile = [
+        '--ro-bind', '/', '/',
+        '--dev', '/dev',
+        '--unshare-pid',
+        '--proc', '/proc',
+        '--die-with-parent',
+      ]
+      if (mode === 'workspace-write') {
+        profile.push('--tmpfs', '/tmp', '--bind', root, root)
+      }
+      return {
+        argv: [runner, ...profile, '--', ...argv],
+        enforcement: 'full',
+        denialSignatures: ['read-only file system'],
+        runnerFailureRules: [{ fatalSignatures: ['bwrap: '] }],
+      }
+    },
   }
+}
+
+/** Whether the deployed runner survived a real read-only profile; undefined = not yet probed. */
+let bwrapUsable
+
+/**
+ * Build a fail-closed sandbox refusal.
+ *
+ * `SANDBOX_UNAVAILABLE` is outside the transport's code vocabulary, so it rides the
+ * out-of-band `appCode` channel exactly like the `FS_*` codes (see `handle` below).
+ *
+ * @param {string} detail human-readable reason
+ * @returns {Error} an error carrying the seam's stable code
+ */
+function sandboxUnavailable(detail) {
+  return Object.assign(new Error(`sandbox: ${detail}`), { code: 'SANDBOX_UNAVAILABLE' })
+}
+
+/**
+ * The runner sits beside the helper inside the deploy root:
+ * `<root>/helper/wsl-helper.mjs` → `<root>/bwrap/usr/bin/bwrap`.
+ *
+ * @returns {string}
+ */
+function defaultBwrapPath() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bwrap', 'usr', 'bin', 'bwrap')
+}
+
+/**
+ * Probe the runner with the real read-only profile, not just `--version`: the
+ * profile is what must work, and unprivileged user namespaces are exactly the
+ * thing a hardened kernel takes away.
+ *
+ * @param {string} runner absolute bwrap path
+ * @returns {boolean}
+ */
+function probeBwrap(runner) {
+  const probe = spawnSync(
+    runner,
+    ['--ro-bind', '/', '/', '--dev', '/dev', '--unshare-pid', '--proc', '/proc', '--die-with-parent', '--', '/bin/true'],
+    { timeout: 5_000 },
+  )
+  return probe.status === 0
 }
 
 /** Paths the host has resolved, for diagnostics and display-path recovery. */

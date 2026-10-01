@@ -32,7 +32,7 @@ import {
   assertHello,
   encodeFrame,
 } from './protocol.js'
-import { NODE_ARCHIVE, NODE_SHA256, NODE_VERSION, nodeArchiveUrl } from './runtime.js'
+import { BWRAP_BIN_PATH, BWRAP_DEB, NODE_ARCHIVE, NODE_SHA256, NODE_VERSION, nodeArchiveUrl } from './runtime.js'
 
 /** Default administrative deadline, matching the reference SSH connection. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
@@ -726,6 +726,96 @@ export async function ensureRuntime(options) {
 }
 
 /**
+ * Deploy the pinned bubblewrap binary into the distribution and prove it executes.
+ *
+ * The sandbox backend is one extracted binary in the user's deploy directory — the
+ * `.deb` is pushed from this machine, unpacked with the distribution's own
+ * `dpkg-deb`, and nothing is installed system-wide. Idempotent like
+ * {@link ensureRuntime}: an already-deployed binary that runs is reused.
+ *
+ * @param {object} options
+ * @param {string} options.distro
+ * @param {string} [options.user]
+ * @param {string} options.homeDir Linux home of the target user
+ * @param {string} options.cacheDir Windows-side archive cache
+ * @param {AbortSignal} [options.signal]
+ * @param {(line: string) => void} [options.onLog] progress narration for the UI
+ * @returns {Promise<{bwrapPath: string, version: string}>}
+ */
+export async function ensureBwrap(options) {
+  const { distro, user, homeDir, cacheDir, signal, onLog = () => {} } = options
+  if (!homeDir) throw new HelperError(HelperErrorCode.INVALID_PARAMS, 'homeDir is required')
+  if (!cacheDir) throw new HelperError(HelperErrorCode.INVALID_PARAMS, 'cacheDir is required')
+
+  const runtimeDir = `${homeDir}/.local/share/dsh-wsl/${distro}`
+  const bwrapPath = `${runtimeDir}/${BWRAP_BIN_PATH}`
+  const versionCommand = `${quote(bwrapPath)} --version || echo DSH_WSL_MISSING`
+
+  const existing = await runInDistro({ distro, user, command: versionCommand, signal })
+  const reported = existing.stdoutText.trim()
+  if (existing.code === 0 && !reported.endsWith('DSH_WSL_MISSING')) {
+    onLog(`reusing the sandbox backend already deployed in ${distro} (${reported})`)
+    return { bwrapPath, version: reported }
+  }
+
+  await mkdir(cacheDir, { recursive: true })
+  const archivePath = path.join(cacheDir, BWRAP_DEB.archive)
+  const cached = await readIfPresent(archivePath)
+  if (!cached || sha256(cached) !== BWRAP_DEB.sha256) {
+    onLog(`downloading ${BWRAP_DEB.archive} on this machine`)
+    const response = await fetch(BWRAP_DEB.url, { signal })
+    if (!response.ok) {
+      throw new HelperError(
+        HelperErrorCode.IO_ERROR,
+        `downloading ${BWRAP_DEB.archive} failed with HTTP ${response.status}`,
+      )
+    }
+    const bytes = Buffer.from(await response.arrayBuffer())
+    const digest = sha256(bytes)
+    if (digest !== BWRAP_DEB.sha256) {
+      throw new HelperError(
+        HelperErrorCode.IO_ERROR,
+        `checksum mismatch for ${BWRAP_DEB.archive}: expected ${BWRAP_DEB.sha256}, received ${digest}`,
+        { expected: BWRAP_DEB.sha256, received: digest },
+      )
+    }
+    // Publish atomically so a truncated download can never look like a valid cache hit.
+    const staging = `${archivePath}.partial`
+    await writeFile(staging, bytes)
+    await rename(staging, archivePath)
+  } else {
+    onLog('reusing verified cached sandbox archive')
+  }
+
+  onLog(`deploying the sandbox backend into ${distro}:${runtimeDir}/bwrap`)
+  const bytes = await readFile(archivePath)
+  const unpack = await runInDistro({
+    distro,
+    user,
+    command: `mkdir -p ${quote(`${runtimeDir}/bwrap`)} && dpkg-deb -x - ${quote(`${runtimeDir}/bwrap`)}`,
+    input: bytes,
+    signal,
+  })
+  if (unpack.code !== 0) {
+    throw new HelperError(
+      HelperErrorCode.IO_ERROR,
+      `unpacking ${BWRAP_DEB.archive} failed: ${unpack.stderrText.trim() || 'unknown error'}`,
+    )
+  }
+
+  const verify = await runInDistro({ distro, user, command: `${quote(bwrapPath)} --version`, signal })
+  const version = verify.stdoutText.trim()
+  if (verify.code !== 0 || !version.startsWith('bubblewrap')) {
+    throw new HelperError(
+      HelperErrorCode.IO_ERROR,
+      `deployed bwrap at ${bwrapPath} did not run: ${verify.stderrText.trim() || 'no output'}`,
+    )
+  }
+  onLog(`sandbox backend ready: ${version}`)
+  return { bwrapPath, version }
+}
+
+/**
  * Copy the helper and its protocol module into the distribution.
  *
  * The pair is deployed as loose files, not installed as a package, so the helper's
@@ -799,4 +889,5 @@ export const RUNTIME = Object.freeze({
   version: NODE_VERSION,
   archive: NODE_ARCHIVE,
   sha256: NODE_SHA256,
+  sandbox: Object.freeze({ backend: 'bwrap', version: BWRAP_DEB.version }),
 })

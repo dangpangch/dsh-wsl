@@ -247,6 +247,134 @@ export default SshConnection
 
 ---
 
+## 4.6 ZCode 对照：能借鉴的是 WSL 行为边界，不是架构
+
+来源：通读 `ZCode-main/packages/server/src/remote/`（`wsl-backend`、`wsl-detect`、`wslProxy`、`connect`、`create-backend`、`remoteDeployLock`、`zcodeAgentWrapperDeploy`）、`ZCode-main/packages/shared/src/`（`remoteTarget`、`wslUserValidation`、`remote-workspace-identity`）、`ZCode-main/packages/desktop/src/`（`main/desktopWslTargetResolver`、`main/desktopRemoteSessions`、`host/windowRemoteConnectionRegistry`、`main/openInEditor`），以及本仓库 `packages/dsh-wsl/**`、`tests/**`。
+
+**本节结论：不能把 ZCode 的 WSL 实现当作 dsh-wsl 的模板。** 两者解决的不是同一个问题。ZCode 的 WSL 后端是「往 distro 里部署一个完整服务，再用一条 stdio RPC 客户端连它」的三种 backend 之一；dsh-wsl 要交付的是「主机跑 Harness，distro 内只跑一个 helper，把 `fs`/`subprocess`/`sandbox` 三个 seam 接到 distro」。**ZCode 的模型恰好就是 §4.5.2 已否决的「远端 host」模型** —— 照搬它等于把已论证掉的方案重新引入，代价是三份重复状态（两份 `$DSH_HOME`、两份 session 日志、一份 distro 内 DSH 发行包），并丢掉 seam 契约。
+
+即使把「只做 WSL 连接」理解为「只实现连接层、不顺带做三个 provider」，结论不变：dsh-wsl 的连接层必须交付**延续性 + 供给 + 租约 + seam 语义**，而 ZCode 的 WSL 后端交付的是**一次性命令通道**（`exec` 一次一条命令、无状态、无 helper、无租约）。
+
+### 4.6.1 根本差异（不可迁移的部分）
+
+| 维度 | ZCode | dsh-wsl |
+|---|---|---|
+| 远程模型 | distro 内跑第二份完整服务：`~/.zcode/server/node ~/.zcode/server/zcode-server.cjs`（`connect.ts:391`） | 主机跑 Harness；distro 内只有 `helper/wsl-helper.mjs` 一个进程 |
+| distro 内部署物 | Node + `zcode-server.cjs` + node-pty + 远端资产包 | 固定 Node v22.20.0 + helper 三件套 + bwrap `.deb` |
+| 主机侧角色 | RPC 客户端（`ChannelClient` + `RemoteServiceAccess`） | `fs`/`subprocess`/`sandbox` 三个 seam 的 provider 实现方 |
+| 后端接口形态 | `exec` / `upload` / `readFile` / `exists`，一次调用一条命令 | `WslConnection.request(method, params)`，长驻进程 + 请求 id 多路复用 |
+| 程序流隔离 | 不需要（远端 server 自己管） | 需要，但 `wsl.exe` 不给 → 已显式拒绝而非降级（§6） |
+| 连接活性 | 无心跳（本地 `wsl.exe` 进程可等 close 事件） | 心跳 10s（`lib/connection.js:40`）+ helper 租约 60s（`:42`） |
+| 资源生命周期 | 无租约；远端 server 进程自己活 | 租约到期 helper 自行清理托管范围（`lib/connection.js:500`） |
+| 范围粒度 | 一个 Host 服务多个 workspace（按 `wsl:distro\0user` 池化 + 60s 空闲回收） | 整 profile 切换（`fs`/`subprocess` 是 host-plane 单例） |
+| 路径与身份 | `workspacePath`（Linux 路径）与 `workspaceIdentity`（去重 key）分离并贯穿全链路 | 无 workspace 路由（M4 已废弃），只有一份 `cwd` |
+| 并发部署 | 有远端部署锁（owner token + heartbeat + release marker） | 只有进程内 `setup ??=`（`lib/provider.js:119`） |
+
+也就是说，**不可迁移的是架构**：远端模型、接缝契约、生命周期所有权、范围粒度。
+
+### 4.6.2 已经独立收敛的一致项（说明 WSL 的「知识」部分没有缺口）**[确证]**
+
+| 问题 | ZCode | dsh-wsl |
+|---|---|---|
+| UTF-8 / UTF-16LE 双解码 | 靠含 NUL 字节判断（`wsl-detect.ts:10`） | 同一启发式（`lib/connection.js:59`） |
+| `wsl.exe -l -v` 首列 `*` 标记默认 distro | 是（`wsl-detect.ts:57`） | 是（`lib/connection.js:172`） |
+| `-d <distro> -u <user> -- …` 参数形状 | 是（`wsl-backend.ts:69`） | 是（`lib/connection.js:114`） |
+| 强制 UTF-8 输出 | 未设 `WSL_UTF8` | 每次调用注入 `WSL_UTF8=1`（`lib/connection.js:75`）→ 更稳 |
+| 原子发布 + 校验和 + 复用已装资源 | `remoteAssetCache` | `.partial` + rename、SHA-256、`reusing the runtime already installed`（`lib/connection.js:586,782`） |
+| 只 kill 自己 spawn 的子进程，绝不 terminate distro | 是（`wsl-backend.ts:425`） | 是（`lib/connection.js:500`，另有租约兜底） |
+| 域错误码带外传递 | 无对应物 | `appCode`（`lib/connection.js:358`）——M3 独立得出 |
+
+### 4.6.3 值得借鉴的三项（按价值排序，均未排期）
+
+**1. 跨进程部署互斥 —— 当前真实缺陷 [高]**
+
+dsh-wsl 的部署幂等只在**进程内**（`setup ??=`，`lib/provider.js:119`）。同一台机器上两个 DSH 窗口（或宿主重启后的残留 helper）同时首次连接同一 distro，会并发执行 `ensureRuntime` → 并发 `mkdir` 同一 `runtimeDir`、并发 `tar -xJ` 覆盖 `bin/node`。
+
+ZCode 对同一问题有完整答案，且它的注释恰好点出同一情形：进程内 single-flight **无法**覆盖不同 Desktop/build/backend（`ZCode-main/packages/server/src/remote/deploy.ts:439`），实现见 `remoteDeployLock.ts`。
+
+> 2026-10-01 复核：仍未修。M5b 的 `ensureBwrap` 把同一模式复制到了第二个资产。另发现 Windows 侧子问题：`fetchNodeArchive`/`ensureBwrap` 的暂存路径固定为 `archivePath.partial`（`lib/connection.js:588-590`、`:783-785`），两进程并发下载会交叉写入同一暂存文件、rename 发布损坏归档——读缓存时的 SHA 校验能自愈但浪费；修互斥锁时应改用带 pid/随机的暂存名。
+
+**2. `bash -lc` 多行脚本会被提前展开 —— 疑似真实缺陷，待实测 [高]**
+
+ZCode 用注释钉死了一条实测结论（`ZCode-main/packages/server/src/remote/remoteDeployLock.ts:85-86`）：
+
+> `wsl.exe` 会先经默认 shell 重组 `bash -lc` 参数，脚本里的局部 `$var` 会在真正的 shell 执行前被展开为空。用纯八进制内容落盘后再执行。
+
+ZCode 为此发明了两个绕法（八进制编码落盘、按字节上传替代 shell 写入，见 `remoteDeployLock.ts:82` 与 `zcodeAgentWrapperDeploy.ts:21`）。**dsh-wsl 也走 `bash -lc`**（`lib/connection.js:117`）。逐条核对本仓库的脚本：
+
+| 落点 | 脚本内容 | 是否含 shell 变量 | 有测试覆盖 |
+|---|---|---|---|
+| `ensureRuntime` `push` | `mkdir -p … && tar -xJ -C … -f -` | 否 | 是（m1:245、m2、m3:154） |
+| `ensureRuntime` **`distro`** | `tmp=$(mktemp -d)` … `"$tmp/${NODE_ARCHIVE}"`（`lib/connection.js:696-705`） | **是** | **否** |
+| `ensureRuntime` `existing` | `test -x … && … --version` | 否 | 否 |
+| `ensureBwrap` | `dpkg-deb -x - …` | 否 | 是（m5b:258） |
+| `deployHelper` | `cat > …` / `sha256sum …` | 否 | 是（m1:269） |
+
+即：**唯一含 shell 变量的脚本恰好是唯一没有测试的策略**，且形状正落在 ZCode 记录的失效模式上。若 ZCode 的结论在本机成立，`distro` 策略会**响亮地失败**（`curl` 得到被展开为空的路径）而非静默错误。**[推断]** —— 本仓库的 m1/m2/m3/m5b 全部显式使用 `strategy: 'push'` 或省略（默认 `push`），**`distro` 与 `existing` 两个策略从未被任何验收脚本执行过**（`tests/m1-acceptance.mjs:251`、`tests/m2-acceptance.mjs:116`、`tests/m3-acceptance.mjs:154`）。
+
+> 2026-10-01 复核：维持原结论——仍未实测、仍未修（grep 证实验收脚本仍全部 `push`）。
+
+**3. 「默认 distro」未归一 —— 会造成重复部署 [中]**
+
+ZCode 用 `resolveCanonicalWslTarget`（`ZCode-main/packages/desktop/src/main/desktopWslTargetResolver.ts:31`，5s TTL）把 `{}` 解析成 `{distro, user}` 的真实值，理由正是「默认 distro」与显式名字不能变成两个不同目标。
+
+dsh-wsl 的 `resolveHome` 只取 `$HOME`（`lib/provider.js:69`），**没有把默认 distro 归一成真实名字**，而 `index.js:60` 把 `config.distro ?? ''` 一直传下去。后果在 `lib/connection.js:633`：
+
+```js
+const runtimeDir = `${homeDir}/.local/share/dsh-wsl/${distro}`   // distro === '' → 尾部空段
+```
+
+于是「不填 distro 连一次」与「填 `debian` 连一次」落到**两个目录**（`…/dsh-wsl/` 与 `…/dsh-wsl/debian`），各下载一份归档、各部署一份 helper、各下载一份 bwrap `.deb`。讽刺的是 `parseDistributionList` 已经解析出 `default: true`（`lib/connection.js:176`），做归一化是现成的。所有验收脚本都传真实 distro 名（m1:249、m5a:104/129、m5b:116），**空 distro 路径同样无覆盖**。
+
+> 2026-10-01 复核：仍未修，且影响面扩大——M5b 后同一空段路径有三处消费（node `lib/connection.js:633`、helper `:836`、bwrap `:750`）。修复会把 `listDistributions` 带进连接路径，而它现在每次调用都全新 spawn `wsl.exe -l -v`（`lib/connection.js:151-154`），届时应按 ZCode 的 5 秒 TTL 缓存（`ZCode-main/packages/server/src/remote/wsl-detect.ts:8`）。
+
+### 4.6.4 不适用（照搬会有害）
+
+- **UNC 快速上传**：ZCode 对 `\\wsl.localhost\<distro>\…` 优先做文件系统复制、失败回退 `cat > file`（`wsl-backend.ts:197-265`）；dsh-wsl 一律走 stdin 流式写。但 dsh-wsl 的 `deployHelper` 额外做了**远端 `sha256sum` 回读校验**（`lib/connection.js:861-873`），这是 ZCode 没有的强度；换成 UNC 复制要小心别丢掉这层。
+- **代理网关重写**：`wslProxy.ts` 解决的是「Windows 上的 loopback 代理在 distro 内不可达」（`wsl-backend.ts:163`）。dsh-wsl 默认 `push` 策略让 distro 完全不出网，只有 `distro` 策略才需要 egress。
+- **Host 池与空闲回收**：ZCode 一个 Host 服务多个 workspace（`windowRemoteConnectionRegistry.ts:116,319`），dsh-wsl 是整 profile 单连接、随插件卸载释放（`index.js:93`），没有这个复杂度也不需要。
+- **跨工作区身份/路由**：ZCode 的 `workspaceIdentity` 体系与按 workspace 的 Host 池，对应的正是 M4 已废弃的路线（§6.5）。
+
+### 4.6.5 唯一有前瞻价值的借鉴点
+
+§6 记录「裸 `pipe` 输出流与 duplex control 通道显式拒绝，因为需要第二条独立流通道，而 `wsl.exe` 给不了」。ZCode 在这一环提供的不是机制而是**探测纪律**：先探 loopback 可达性、再回退，并显式区分 mirrored networking 模式（`wsl-backend.ts:163-195`，纯函数在 `wslProxy.ts`）。这套「探测 + 有界回退 + 失败不阻断主流程」的写法，直接适用于将来「Windows 经 WSL2 localhost 转发连到 distro 内 TCP socket」的第二通道设计。**[推断]**
+
+### 4.6.6 顺带发现的两个脚本问题 **[确证]**
+
+1. 根 `package.json` 的 `"test": "node --test tests/"`。Node v24 把位置参数**当作 glob 模式**而不是目录枚举（`lib/internal/main/test_runner.js`：`options.globPatterns = process.argv.slice(1)`；`createTestFileList` 直接用 `new Glob(patterns, …)`），而默认只认 `**/{test,test/**/*,test-*,*[._-]test}.{js,mjs,cjs}` 这一组命名。`tests/m1-acceptance.mjs` 同时不满足「目录名为 `test`」和「文件名含 `test` 边界」两条，因此这条脚本**不会收集到任何验收文件**；§6 记录的统一跑法（逐个 `node tests/mX-acceptance.mjs`）才是有效的。若要修，把文件改名为 `test-m1.mjs` 之类，或把脚本改为显式逐个执行。
+2. `"probe": "node tests/probe-m1.mjs"` 指向已删除的文件（§6 记录 `probe-m1` 已删，`tests/` 目录只剩 5 个 `*-acceptance.mjs`），是死引用。
+
+> 2026-10-01 实测修正（第 1 条）：`node --test tests/` 在 Node v24.20.0 上的真实行为**不是静默收集零个文件**，而是把 `tests` 目录路径当作模块加载并**响亮失败**（exit 1，`Cannot find module '…\tests'`）。结论不变——脚本跑不到任何验收文件——但 CI 上会红而不是假绿，危害比原记录的低。
+
+### 4.6.7 2026-10-01 复审：对账结果与本节漏掉的事项
+
+对本节做了一次复审：§4.6.1–§4.6.6 引用的每一条 ZCode 证据都到源码重新核对（**全部属实**，含 `remoteDeployLock.ts:84-86` 的展开注释、`deploy.ts:438-441` 的 single-flight 注释、`zcodeAgentWrapperDeploy.ts:20-33` 的按字节上传），并通读了本仓库当前实现（`connection/provider/fs/subprocess/sandbox/index`）。复审发现：**三个借鉴项至今无一进入里程碑排期**，以及一个本节原本没有覆盖、恰好落在「ZCode 处理得最完整的领域」（断连检测与恢复）的真实回归。
+
+**0. 死连接缓存回归 —— M4 教训在 M5a 重写中丢失 [高，未修]**
+
+M4 review 曾修过「`connect()` 永久缓存已 resolve 的值」（§6 缺陷表），但修复代码在被 M5a 删除的 `lib/realm.js` 里，**没有迁移到 `createWslRuntime`**。现状是三层缓存咬住死连接：
+
+- `lib/provider.js:118-162`：`setup ??=` 只在 reject 时清缓存（`:154-159`）；**resolve 过但连接后来死了**会被永久返回。
+- `lib/fs.js:188-191`、`lib/subprocess.js:392-395`：各自的 `#pending ??= this.connect()` 无死活检查——即使修好 `start()`，这两个 provider 还会各自咬住死连接不放。
+- `lib/sandbox.js:75-84`：`confine` 每次调用重新 connect，无缓存——反而健康。
+- `lib/connection.js:473-480` 的 `onClose()` **全仓库无消费方**；唯一读 `.closed` 的地方是 `status()`（`lib/provider.js:175`）。
+
+后果链：helper 崩溃、`wsl.exe --shutdown`、distro 重启 → 连接 `#closed` → 之后每一次 `ctx.fs`/`ctx.subprocess` 操作永远收到 `IO_ERROR: connection is closed`，**整个 profile 变砖直到重载插件**。触发条件正是 §6 记录过的普通场景。123 项验收测试没有一条覆盖「连接死亡后下一次操作自动恢复」。
+
+ZCode 的范本：连接层上报断连（`ZCode-main/packages/server/src/remote/connect.ts:235-245` 把 backend 断连并入 `onDidRemoteClose`），上层据此回收路由、下次使用时重建；缓存条目失败即删（`ZCode-main/packages/desktop/src/main/desktopWslTargetResolver.ts:63-68` 的 catch 删缓存——与本仓库 provider 的「reject 即清」同模式，缺的正是「已 resolve 但已死」的半边）。
+
+**修法（三层都要动）**：`start()` 返回缓存前检查 `connection.closed`，失效则丢弃重建；订阅 `connection.onClose` 主动置 `setup = undefined`；`fs.js`/`subprocess.js` 的 `connection()` 对已 resolve 的 promise 做同样检查。回归守卫：kill helper 后下一次 `ctx.fs` 操作必须成功。
+
+**三个小缺口（均低 severity，随 M5c 顺带修）：**
+
+1. **stderr 未走双解码**：`runInDistro` 的 `stderrText` 原样 `toString('utf8')`（`lib/connection.js:124-125`）。`WSL_UTF8=1` 无效的构建上（M2 实测存在），wsl.exe 自身的错误（distro 名打错、WSL 未装）是 UTF-16LE，进错误消息即乱码。ZCode 对 stdout/stderr 统一走 `decodeWslOutput`。修法一行：`stderrText` 用现成的 `decodeWslText`。
+2. **helper 启动参数未加引号**：`lib/connection.js:264-270` 把 `nodePath`/`helperPath` 裸放 argv；经 wsl.exe 默认 shell 重组（§4.6.3-2 同一条结论）后，homeDir 含空格即碎。ZCode 的全部远端路径都过 `quotePosixShellArg`。触发罕见，但本节既已引用那条 shell 重组结论，启动路径按同一纪律处理才自洽。
+3. **一次性 provisioning 子进程不被 dispose 追踪**：ZCode 追踪全部 owned children 并在 dispose 时统一 kill（`ZCode-main/packages/server/src/remote/wsl-backend.ts:425`）；本仓库 `dispose()` 只管长驻 helper child，进行中的 `runWsl`（如 25MB tar 解包）会跑完。危害很小（只写部署目录，后续 start 有 reuse 检查），记录即可。
+
+> 本节全部结论来自源码通读。**原会话未执行任何测试**：shell 被沙箱拦住（`SetNamedSecurityInfoW failed (Win32 5): grantWrite(D:\workspace\dsh\dsh-wsl)`），`pwsh` 无法启动，所以 §4.6.3 的三项停留在「源码证据 + 待实测」。2026-10-01 复审（§4.6.7）shell 可用，执行了最小探针（`node --test tests/` 行为实测，见上文修正）；§4.6.3 的三项仍未实测。
+
+---
+
 ## 6. 实施进度
 
 | 里程碑 | 状态 | 证据 |
@@ -257,7 +385,8 @@ export default SshConnection
 | M3 `dsh-wsl-fs` | **完成** | `tests/m3-acceptance.mjs` **52/52 通过** |
 | M4 作用域路由 | **已废弃** —— realm 机制与 DSH 架构冲突（§6.5），代码已删除 | 结论保留在 §6.5 |
 | M5a 整 profile 切换到 WSL | **完成** | `tests/m5a-acceptance.mjs` **11/11 通过** |
-| M5b sandbox + UI | 未开始 | — |
+| M5b sandbox + UI | **完成** | `tests/m5b-acceptance.mjs` **14/14 通过**；distro 内 bwrap 后端，M5a 的「沙箱只报告不强制」缺口已关闭 |
+| M5c 健壮性收口 | 未开始 | 2026-10-01 审查产出（§4.6.7）：死连接恢复 ＋ 部署互斥与暂存名（§4.6.3-1）＋ `distro` 策略实测（§4.6.3-2）＋ distro 归一化（§4.6.3-3）＋ 三个小缺口；**排在 M6 前**，优先级：死连接 > 互斥 > 策略实测 > 归一化 |
 | M6 Skill/MCP/Plugin 同步 | 未开始 | — |
 | M7 打包与 `install_bundle` | 未开始 | — |
 
@@ -269,15 +398,16 @@ packages/dsh-wsl/
   helper/
     protocol.js        # 生成物：lib/protocol.js 的同步副本（tools/sync-helper.mjs）
     fsio.mjs           # Cordis-free 文件原语：realpath 身份、版本 token、原子发布、字面编辑
-    wsl-helper.mjs     # distro 内唯一的 dsh-wsl 进程
+    wsl-helper.mjs     # distro 内唯一的 dsh-wsl 进程（含 sandbox.confine：bwrap 包装）
   lib/
     protocol.js        # 权威帧协议：u32be 长度前缀 + JSON，64 MiB 上限，版本握手
-    runtime.js         # 固定 Node v22.20.0 linux-x64 + 官方 SHA-256
-    connection.js      # wsl.exe 传输、帧解码、心跳、租约、dispose、运行时供给、helper 部署
+    runtime.js         # 固定 Node v22.20.0 linux-x64 + 官方 SHA-256；固定 bubblewrap 0.12.0 (trixie) + SHA-256
+    connection.js      # wsl.exe 传输、帧解码、心跳、租约、dispose、运行时供给、helper 部署、bwrap 供给（ensureBwrap）
     subprocess.js      # ctx.subprocess 实现 + 环境擦洗
     paths.js           # Windows ↔ WSL 路径翻译（纯函数、可逆、不可译即拒绝）
     fs.js              # ctx.fs 实现（同步构造、惰性连接、按需解析相对基准）
-    provider.js        # createWslRuntime + provideHostServices（host 平面注册）
+    sandbox.js         # ctx.sandbox 实现：confine(argv, policy) → bwrap 包装 argv，fail-closed
+    provider.js        # createWslRuntime + provideHostServices（host 平面注册 fs/subprocess/sandbox）
   index.js             # Cordis 插件入口（apply），返回连接面
 packages/dsh-wsl-bundle/
   package.json         # dsh.bundle.patch 指向下方 patch
@@ -293,16 +423,32 @@ tools/
   probe-distro.sh      # distro 工具与网络探测
 tests/
   m1-acceptance.mjs    # 28 项
-  m2-acceptance.mjs    # 17 项
+  m2-acceptance.mjs    # 18 项
   m3-acceptance.mjs    # 52 项
   m5a-acceptance.mjs   # 11 项
+  m5b-acceptance.mjs   # 14 项
 ```
 
-**合计 109 项检查全绿。** 统一跑法：
+**合计 123 项检查全绿。** 统一跑法：
 
 ```powershell
-foreach ($m in @("m1","m2","m3","m5a")) { node "tests\$m-acceptance.mjs" }
+foreach ($m in @("m1","m2","m3","m5a","m5b")) { node "tests\$m-acceptance.mjs" }
 ```
+
+### M5b 实测确证的事实
+
+- **后端选型**：distro 内无 bwrap/firejail，securityfs 为空（Landlock 无法从 Node 直调），但非特权 userns 可用、`deb.debian.org` 可达 → 选 **bubblewrap**（Debian trixie 官方包 `0.12.0-1~deb13u1`，仅提取 `usr/bin/bwrap` 推进用户部署目录，**不装系统**；其依赖 libc6/libcap2/libselinux1 是 trixie 基础系统的成员）。
+- **方言与宿主后端一致**：profile argv、`enforcement: 'full'`、denial `read-only file system`、runner-failure `bwrap: ` 全部照抄 `dsh-sandbox-local` 的 bwrap 分支，消费方无法从行为上区分两个后端。
+- **沙箱 mode 现在是真强制**：M5a 记录的「`sandbox-local` 被禁用后 mode 只报告不强制」缺口由本里程碑关闭 —— `ctx.sandbox` 在 distro 内用 bwrap 落实 file-effect policy，不可用即 fail-closed `SANDBOX_UNAVAILABLE`（经 `appCode` 带外通道，与 `FS_*` 同路）。
+- **`--tmpfs /tmp` 的语义边界**：workspace-write 下 `/tmp` 是每次 confinement 独立的 tmpfs —— 私有临时目录可写，但不持久、也不与 `ctx.fs` 共享；持久的工作区写在 `workspaceRoot`（消费方按 seam 传 canonical 路径）。因此验收测试的 workspace 放在 home 下。
+- **workspaceRoot 在 helper 侧 realpath 化**：bind 落在真实 inode 上，符号链接根也被正确授写；`--ro-bind /` 之下 home 内的链接在沙箱内仍可见（`/tmp` 下的链接则被 tmpfs 藏掉 —— 见上一条）。
+- **供给幂等**：`ensureBwrap` 与 `ensureRuntime` 同模式 —— 已部署且可执行则复用；Windows 侧缓存 `.deb` 并按固定 SHA-256 校验后原子发布。
+
+### M5b 诚实记录的代价与缺口
+
+- **`danger-full-access` 不经 confine**：与 seam 契约一致（消费方自行 bypass）；provider 收到该 mode 会显式拒绝而非降级。
+- **网络与进程可见性不在承诺内**：bwrap 的 `--unshare-pid` 隔了 PID 视图，但 file-effect 词汇表本就不含网络 —— 与参考实现相同。
+- **内核依赖非特权 userns**：WSL 内核若收紧 `user.max_user_namespaces` 或关闭 userns，probe 会失败并 fail-closed；此时 sandbox 不可用是显式错误，不是静默裸跑。
 
 > 2026-10-01 修复：`process.spawn` 曾把宿主 Windows `PATH` 原样转发进 distro 子进程，裸名命令按它解析必然 ENOENT（实测 exit -2、无 stderr）。现 host 侧不再转发宿主 `PATH`（`lib/subprocess.js`），helper 侧默认给子进程注入自己的 Linux `PATH`（`helper/wsl-helper.mjs`，与 `exec.resolve` 同一模式）；显式 spec `PATH` 仍然优先。回归守卫：`the child gets a Linux PATH, not the host one`。
 
@@ -449,7 +595,7 @@ M0 把「按工作区的隔离作用域能否成立」列为最大技术风险�
 | 2 | `agentPresets.acquireScope(id)` 与 `ctx.isolate(name, label)` 是否语义等价 | 未决 | 同上 | 同上 |
 | 3 | 每个 workspace 的执行目标记录该落在哪 | 未决 | 决定持久化设计 | 读 `dsh-workspace` 的 `.d.ts`（已可下载） |
 | 4 | `ctx.subprocess` provider 抽象基类的导出名与必实现方法集 | 未决 | M2 实现 | `@deepseek-ai/dsh-subprocess` 的 `.d.ts` |
-| 5 | `ctx.sandbox` provider 抽象基类的导出名 | 未决 | M5 实现 | `@deepseek-ai/dsh-sandbox` 的 `.d.ts` |
+| 5 | `ctx.sandbox` provider 抽象基类的导出名 | **已解决**（M5b） | seam 为 `SandboxProvider.confine(argv, policy) → ConfinedArgv`（argv 包装，非执行）；本插件以普通对象注册 `sandbox`，与 fs/subprocess 同法 | `@deepseek-ai/dsh-sandbox` 的 `.d.ts` |
 | 6 | `wsl.exe` stdio 是否可靠承载长连接分帧（无内层 TTY 竞争） | 未决 | M1 的成败前提 | M1 用最小 echo/uname 往返实测 |
 
 **下一步动作**：安装 seam 包（`dsh-fs`、`dsh-subprocess`、`dsh-sandbox`、`dsh-scope`、`cordis`）到开发 workspace，从 `lib/types/**/*.d.ts` 读权威类型，消解 4、5；再做 M1 的 `wsl.exe` 往返实测消解 6。

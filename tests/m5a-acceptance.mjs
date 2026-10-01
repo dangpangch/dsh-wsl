@@ -71,7 +71,7 @@ await check('the bundle declares the patch that carries the switch', async () =>
 })
 
 await check('the plugin declares exactly the services it takes over', () => {
-  assert.deepEqual([...PROVIDED_SERVICES], ['fs', 'subprocess'])
+  assert.deepEqual([...PROVIDED_SERVICES], ['fs', 'subprocess', 'sandbox'])
 })
 
 console.log('\nunit: replacement semantics')
@@ -125,10 +125,11 @@ try {
   cacheDir = await mkdtemp(path.join(tmpdir(), 'dsh-wsl-m5a-'))
   ctx = new Context()
 
-  await check('the plugin registers both host-plane services synchronously', () => {
+  await check('the plugin registers all host-plane services synchronously', () => {
     api = apply(ctx, { distro: target.name, cacheDir })
     assert.ok(ctx.get('fs'), 'fs was provided without awaiting a connection')
     assert.ok(ctx.get('subprocess'), 'subprocess was provided without awaiting a connection')
+    assert.ok(ctx.get('sandbox'), 'sandbox was provided without awaiting a connection')
     assert.equal(ctx.get('fs'), api.providers.fs)
     assert.equal(ctx.get('subprocess'), api.providers.subprocess)
   })
@@ -196,6 +197,7 @@ try {
     await ctx.fiber.dispose()
     assert.equal(ctx.get('fs'), undefined, 'the filesystem slot was released')
     assert.equal(ctx.get('subprocess'), undefined, 'the subprocess slot was released')
+    assert.equal(ctx.get('sandbox'), undefined, 'the sandbox slot was released')
     assert.equal(api.status().connected, false, 'the connection was closed')
   })
 } catch (error) {

@@ -22,10 +22,12 @@ import {
   WIRE_VERSION,
   WslConnection,
   deployHelper,
+  ensureBwrap,
   ensureRuntime,
   listDistributions,
   runWsl,
 } from './connection.js'
+import { WslSandbox } from './sandbox.js'
 import { WslSubprocess } from './subprocess.js'
 import { expandHome, isWindowsBackedPath, linuxToWindows, windowsToLinux } from './paths.js'
 
@@ -33,7 +35,7 @@ import { expandHome, isWindowsBackedPath, linuxToWindows, windowsToLinux } from 
 export const HELPER_SOURCE_DIR = path.join(import.meta.dirname, '..', 'helper')
 
 /** Service names this plugin registers at the host plane. */
-export const PROVIDED_SERVICES = Object.freeze(['fs', 'subprocess'])
+export const PROVIDED_SERVICES = Object.freeze(['fs', 'subprocess', 'sandbox'])
 
 /**
  * Resolve the cache directory used for the runtime archive.
@@ -133,6 +135,8 @@ export function createWslRuntime(options) {
         sourceDir: helperSourceDir,
       })
       onLog(`helper deployed (${deployed.helperHash.slice(0, 12)}…)`)
+      onLog('provisioning the sandbox backend')
+      await ensureBwrap({ distro: options.distro, user: options.user, homeDir, cacheDir, onLog })
 
       connection = new WslConnection({
         distro: options.distro,
@@ -190,7 +194,7 @@ export function createWslRuntime(options) {
  * @param {ReturnType<typeof createWslRuntime>} runtime
  * @param {object} options
  * @param {string} options.distro distribution name, for host-path mapping
- * @returns {{fs: object, subprocess: WslSubprocess, disposers: Array<() => unknown>}}
+ * @returns {{fs: object, subprocess: WslSubprocess, sandbox: WslSandbox, disposers: Array<() => unknown>}}
  */
 export function provideHostServices(ctx, runtime, options) {
   const connect = async () => (await runtime.start()).connection
@@ -204,13 +208,18 @@ export function provideHostServices(ctx, runtime, options) {
     defaultCwd: async () => (await runtime.start()).cwd,
   })
   const subprocess = new WslSubprocess({ connect })
+  const sandbox = new WslSandbox({ connect })
 
   // `provide` is the registration here: these are plain objects, not `Service`
   // subclasses, so constructing them has no side effect. Registering on `ctx` (the host
   // plane) is what makes every `inject(['fs'])` consumer resolve them.
-  const disposers = [ctx.provide('fs', fs), ctx.provide('subprocess', subprocess)]
+  const disposers = [
+    ctx.provide('fs', fs),
+    ctx.provide('subprocess', subprocess),
+    ctx.provide('sandbox', sandbox),
+  ]
 
-  return { fs, subprocess, disposers }
+  return { fs, subprocess, sandbox, disposers }
 }
 
 /** Path helpers, re-exported so the UI never reimplements them. */

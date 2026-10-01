@@ -25,7 +25,7 @@ import {
 } from './lib/provider.js'
 
 /** Service names this plugin takes over at the host plane. */
-export const PROVIDED_SERVICES = Object.freeze(['fs', 'subprocess'])
+export const PROVIDED_SERVICES = Object.freeze(['fs', 'subprocess', 'sandbox'])
 
 /** Where the deployable helper pair lives inside this package. */
 export { HELPER_SOURCE_DIR } from './lib/provider.js'
@@ -70,9 +70,10 @@ export function apply(ctx, config = {}) {
     requestTimeoutMs: config.requestTimeoutMs,
   })
 
-  // Registered synchronously so every `inject(['fs'])` / `inject(['subprocess'])` consumer
-  // resolves this composition's providers. The connection itself is opened lazily.
-  const { fs, subprocess, disposers } = provideHostServices(ctx, runtime, { distro })
+  // Registered synchronously so every `inject(['fs'])` / `inject(['subprocess'])` /
+  // `inject(['sandbox'])` consumer resolves this composition's providers. The
+  // connection itself is opened lazily.
+  const { fs, subprocess, sandbox, disposers } = provideHostServices(ctx, runtime, { distro })
 
   const api = {
     /** Distribution inventory, for the settings page and the workspace picker. */
@@ -84,7 +85,7 @@ export function apply(ctx, config = {}) {
     /** Path translation helpers, so the UI never reimplements them. */
     paths,
     /** The live providers, for diagnostics and tests. */
-    providers: { fs, subprocess },
+    providers: { fs, subprocess, sandbox },
   }
 
   // Disposal is owned by the context: unloading the plugin must release the service slots

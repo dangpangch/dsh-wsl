@@ -9,14 +9,17 @@
 # Rows disabled, and why:
 #   fs-local        provides `ctx.fs`          — replaced by the WSL filesystem
 #   fs-sandbox      extends fs-local, so it cannot survive fs-local's removal; file-effect
-#                   confinement is consequently NOT enforced in this mode (see below)
+#                   policy on WSL paths is enforced by the WSL sandbox instead
 #   subprocess      provides `ctx.subprocess`  — replaced by the WSL subprocess provider
 #   sandbox-local   provides `ctx.sandbox`     — the host process sandbox cannot confine
-#                   processes that run inside the distribution
+#                   processes that run inside the distribution; the WSL provider wraps
+#                   confined argv with the distribution's own bubblewrap backend instead
 #
-# Known limitation, stated rather than hidden: with `sandbox-local` and `fs-sandbox`
-# disabled, sandbox mode is reported but not enforced for WSL paths. `sandboxPolicy` is
-# left mounted so consumers that require it keep working.
+# Sandbox note: since M5b the WSL plugin provides `ctx.sandbox` itself. Confined argv
+# runs under a deployed bubblewrap with the same profile dialect `sandbox-local` speaks
+# on Linux, so mode IS enforced for processes inside the distribution, and `full`
+# enforcement is reported rather than implied. A backend that cannot start fails closed
+# with SANDBOX_UNAVAILABLE; mode is never reported-but-ignored.
 
 - id: include:fs-local
   disabled: true
