@@ -539,6 +539,54 @@ export class WslConnection {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Root of everything dsh-wsl creates inside a distribution, relative to the target
+ * user's home: one visible, one-command-cleanable directory instead of files scattered
+ * across XDG homes. The deploy tree per distribution and the provision locks both live
+ * here; test suites put their scratch under `.dsh_wsl/.scratch/`.
+ */
+export const DEPLOY_ROOT = '.dsh_wsl'
+
+/**
+ * Move a pre-`.dsh_wsl` deployment (the old XDG data home) into the unified root.
+ *
+ * A one-time rename on the same filesystem, so it costs nothing; a no-op when the old
+ * tree is absent or the new one already exists. The old parent directory is removed
+ * when empty (other distributions not yet migrated keep it non-empty).
+ *
+ * @param {object} options
+ * @param {string} options.distro
+ * @param {string} [options.user]
+ * @param {string} options.homeDir Linux home of the target user
+ * @param {AbortSignal} [options.signal]
+ * @param {(line: string) => void} [options.onLog]
+ */
+export async function migrateLegacyDeployRoot(options) {
+  const { distro, user, homeDir, signal, onLog = () => {} } = options
+  const legacyRoot = `${homeDir}/.local/share/dsh-wsl`
+  const result = await runInDistro({
+    distro,
+    user,
+    signal,
+    command: [
+      `if [ -d ${quote(`${legacyRoot}/${distro}`)} ] && [ ! -e ${quote(`${homeDir}/${DEPLOY_ROOT}/${distro}`)} ]; then`,
+      `mkdir -p ${quote(`${homeDir}/${DEPLOY_ROOT}`)}`,
+      `mv ${quote(`${legacyRoot}/${distro}`)} ${quote(`${homeDir}/${DEPLOY_ROOT}/${distro}`)}`,
+      `printf MIGRATED; fi;`,
+      `rmdir ${quote(legacyRoot)} 2>/dev/null || true`,
+    ].join('\n'),
+  })
+  if (result.code !== 0) {
+    throw new HelperError(
+      HelperErrorCode.IO_ERROR,
+      `migrating the old deployment failed: ${result.stderrText.trim() || 'unknown error'}`,
+    )
+  }
+  if (result.stdoutText.includes('MIGRATED')) {
+    onLog(`moved the existing deployment from ${legacyRoot} into ${homeDir}/${DEPLOY_ROOT}`)
+  }
+}
+
+/**
  * Compute a buffer's SHA-256.
  *
  * @param {Buffer} data bytes to hash
@@ -713,7 +761,7 @@ export async function ensureRuntime(options) {
   if (!homeDir) throw new HelperError(HelperErrorCode.INVALID_PARAMS, 'homeDir is required')
   if (!cacheDir) throw new HelperError(HelperErrorCode.INVALID_PARAMS, 'cacheDir is required')
 
-  const runtimeDir = `${homeDir}/.local/share/dsh-wsl/${distro}`
+  const runtimeDir = `${homeDir}/${DEPLOY_ROOT}/${distro}`
   // The archive is node-v<X>-<plat>/…; extracting with --strip-components=1 lands
   // `bin/node` directly under the runtime directory.
   const nodePath = `${runtimeDir}/bin/node`
@@ -834,7 +882,7 @@ export async function ensureBwrap(options) {
   if (!homeDir) throw new HelperError(HelperErrorCode.INVALID_PARAMS, 'homeDir is required')
   if (!cacheDir) throw new HelperError(HelperErrorCode.INVALID_PARAMS, 'cacheDir is required')
 
-  const runtimeDir = `${homeDir}/.local/share/dsh-wsl/${distro}`
+  const runtimeDir = `${homeDir}/${DEPLOY_ROOT}/${distro}`
   const bwrapPath = `${runtimeDir}/${BWRAP_BIN_PATH}`
   const versionCommand = `${quote(bwrapPath)} --version || echo DSH_WSL_MISSING`
 
@@ -922,7 +970,7 @@ export async function ensureBwrap(options) {
  */
 export async function deployHelper(options) {
   const { distro, user, homeDir, sourceDir, signal } = options
-  const deployDir = `${homeDir}/.local/share/dsh-wsl/${distro}/helper`
+  const deployDir = `${homeDir}/${DEPLOY_ROOT}/${distro}/helper`
   await runInDistro({ distro, user, command: `mkdir -p ${quote(deployDir)}`, signal })
 
   const files = ['protocol.js', 'fsio.mjs', 'wsl-helper.mjs']

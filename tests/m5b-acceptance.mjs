@@ -129,7 +129,7 @@ try {
 
   await check('the workspace root is prepared outside any confinement', async () => {
     HOME = (await runtime.start()).homeDir
-    WS = `${HOME}/dsh-wsl-m5b-ws`
+    WS = `${HOME}/.dsh_wsl/.scratch/m5b-ws`
     await runPlain(`mkdir -p ${WS}`)
   })
 
@@ -195,8 +195,8 @@ try {
   await check('a symlinked workspace root is canonicalized before the bind', async () => {
     // The real directory and its symlink live under the home, which stays a read-only
     // bind inside the confinement, so the symlink itself remains visible there.
-    const real = `${HOME}/dsh-wsl-m5b-real`
-    const link = `${HOME}/dsh-wsl-m5b-link`
+    const real = `${HOME}/.dsh_wsl/.scratch/m5b-real`
+    const link = `${HOME}/.dsh_wsl/.scratch/m5b-link`
     await runPlain(`mkdir -p ${real} && ln -sfn ${real} ${link}`)
     const confined = await sandbox.confine(
       ['sh', '-c', `echo via-link > ${link}/through.txt`],

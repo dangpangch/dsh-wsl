@@ -18,6 +18,7 @@ import process from 'node:process'
 
 import { WslFileSystem } from './fs.js'
 import {
+  DEPLOY_ROOT,
   RUNTIME,
   WIRE_VERSION,
   WslConnection,
@@ -25,6 +26,7 @@ import {
   ensureBwrap,
   ensureRuntime,
   listDistributions,
+  migrateLegacyDeployRoot,
   runWsl,
   withProvisionLock,
 } from './connection.js'
@@ -122,7 +124,7 @@ export function createWslRuntime(options) {
     setup ??= (async () => {
       // An empty configured distro means "the system default". Resolve it to the real name
       // once, so every deployment path (node, helper, bwrap) lands in one canonical
-      // `~/.local/share/dsh-wsl/<distro>/` directory shared with explicit connections.
+      // `~/.dsh_wsl/<distro>/` directory shared with explicit connections.
       if (!options.distro) {
         const distributions = await listDistributions()
         const picked = distributions.find((d) => d.default) ?? distributions[0]
@@ -138,10 +140,11 @@ export function createWslRuntime(options) {
 
       // Provisioning writes into one shared deploy tree; two DSH windows (or a leftover
       // helper from a killed host) connecting to the same distro must not race it.
-      const lockPath = `${homeDir}/.local/share/dsh-wsl/.${distroName}.lock`
+      const lockPath = `${homeDir}/${DEPLOY_ROOT}/.${distroName}.lock`
       const provisioned = await withProvisionLock(
         { distro: distroName, user: options.user, lockPath, onLog },
         async () => {
+          await migrateLegacyDeployRoot({ distro: distroName, user: options.user, homeDir, onLog })
           const runtime = await ensureRuntime({
             distro: distroName,
             user: options.user,

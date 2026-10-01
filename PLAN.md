@@ -456,6 +456,7 @@ M5c 按审查排期分四个 commit 落地（死连接恢复 → distro 归一�
 - **归一化（§4.6.3-3）**：空 distro 在 `start()` 内解析为系统默认的真实名字（`default` 标记优先，否则第一个），node/helper/bwrap 三件套全部落进 canonical 的 `~/.local/share/dsh-wsl/<distro>/` 目录；`runtime.distro` getter 供 fs 的 UNC 映射经 thunk 读取（空 distro 不再退化成 `\\wsl$\localhost\…`）。
 - **stderr 双解码（§4.6.7-1）**：`runInDistro` 的 stdout/stderr 统一走 `decodeWslText`。
 - **出口事实更新**：本环境 distro 内对 nodejs.org 的 TLS 也被阻断（`curl (35) unexpected eof`），与 M2 记录的 `registry.npmjs.org` 阻断同类——`push` 默认策略再次被证明是正确选型。会话末期主机侧对 nodejs.org 也出现 TLS 拦截（`SEC_E_WRONG_PRINCIPAL`），因此 spaced-home 检查改为从 canonical 树 `cp -a` 预置、`distro` 策略检查自报 SKIP，整套 m5c 对主机出网零依赖。
+- **部署根统一到 `~/.dsh_wsl/`**：distro 侧所有 dsh-wsl 文件收进一个可见、一条命令可清空的目录——部署树 `~/.dsh_wsl/<distro>/`（node/helper/bwrap，helper 仍按自身位置相对解析 bwrap，整体搬移无损）、供给锁 `~/.dsh_wsl/.<distro>.lock`、测试残渣 `~/.dsh_wsl/.scratch/`。`migrateLegacyDeployRoot` 把旧 XDG 路径 `~/.local/share/dsh-wsl/<distro>` 一次性 rename 进来（同文件系统零成本；旧树缺失或新树已存在时为 no-op），在供给锁内执行。实机迁移已执行，distro home 里 `.local/share/dsh-wsl` 不复存在。/tmp 下的测试文件保持原位——tmpfs 自清且测试 finally 自删。
 - **记录不动（§4.6.7-3）**：一次性 provisioning 子进程仍不被 dispose 追踪——按审查结论维持「只记录」，危害上界是写完部署目录后被 reuse 检查收敛。
 
 ### M5b 诚实记录的代价与缺口

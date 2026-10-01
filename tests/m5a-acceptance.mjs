@@ -145,7 +145,7 @@ try {
   await check('an inject-style consumer resolves the WSL filesystem', async () => {
     const home = await api.providers.fs.resolve('~', { cwd: '/' })
     assert.ok(home, 'the tilde resolved')
-    const marker = `${home.targetKey}/.cache/dsh-wsl-m5a-marker.txt`
+    const marker = `${home.targetKey}/.dsh_wsl/.scratch/m5a-marker.txt`
     const file = await api.providers.fs.resolve(marker)
     await api.providers.fs.writeText(file, 'written through the host-plane provider\n')
     const readBack = await api.providers.fs.readText(file)

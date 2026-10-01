@@ -168,7 +168,7 @@ try {
     cwd: homeDir,
   })
 
-  workDir = path.posix.join(homeDir, '.cache', `dsh-wsl-m3-${Date.now()}`)
+  workDir = path.posix.join(homeDir, '.dsh_wsl', '.scratch', `m3-${Date.now()}`)
   await runWsl(['-d', target.name, '--', 'bash', '-lc', `mkdir -p '${workDir}'`])
 
   await check('resolves a path to a stable target', async () => {

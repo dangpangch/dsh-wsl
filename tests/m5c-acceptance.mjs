@@ -22,6 +22,7 @@ import { Context } from '@deepseek-ai/cordis'
 
 import { createWslRuntime, provideHostServices, HELPER_SOURCE_DIR } from '../packages/dsh-wsl/lib/provider.js'
 import {
+  migrateLegacyDeployRoot,
   ensureRuntime,
   listDistributions,
   runWsl,
@@ -118,7 +119,7 @@ try {
 
     // THE assertion: the same provider object, holding a dead cached connection,
     // must succeed on the next operation — reconnect, not `connection is closed` forever.
-    const marker = `${first.targetKey}/.cache/dsh-wsl-m5c-marker.txt`
+    const marker = `${first.targetKey}/.dsh_wsl/.scratch/m5c-marker.txt`
     const file = await fs.resolve(marker)
     await fs.writeText(file, 'recovered\n')
     assert.equal(await fs.readText(file), 'recovered\n')
@@ -133,7 +134,7 @@ try {
   })
 
   await check('THE LOCK: concurrent provisioning serializes in the distribution', async () => {
-    const lockPath = `${(await runtime.start()).homeDir}/.local/share/dsh-wsl/.${target.name}.lock.m5c`
+    const lockPath = `${(await runtime.start()).homeDir}/.dsh_wsl/.${target.name}.lock.m5c`
     const events = []
     const work = (name) => async () => {
       events.push(`start:${name}`)
@@ -157,7 +158,7 @@ try {
 
   await check('THE LOCK: a stale lock is stolen, not waited on', async () => {
     const home = (await runtime.start()).homeDir
-    const lockPath = `${home}/.local/share/dsh-wsl/.${target.name}.lock.m5c-stale`
+    const lockPath = `${home}/.dsh_wsl/.${target.name}.lock.m5c-stale`
     // Backdate the lock past the staleness window, as a killed holder would leave it.
     await runWsl([
       '-d',
@@ -235,8 +236,8 @@ try {
         '--',
         'bash',
         '-lc',
-        `mkdir -p '${spacedHome}/.local/share/dsh-wsl' && ` +
-          `cp -a '${canonical}/.local/share/dsh-wsl/${target.name}' '${spacedHome}/.local/share/dsh-wsl/'`,
+        `mkdir -p '${spacedHome}/.dsh_wsl' && ` +
+          `cp -a '${canonical}/.dsh_wsl/${target.name}' '${spacedHome}/.dsh_wsl/'`,
       ])
       const state = await spacedRuntime.start()
       assert.ok(state.connection.hello.pid > 0, 'the helper launched from the spaced path')
@@ -246,9 +247,38 @@ try {
     }
   })
 
+  await check('THE MIGRATION: a legacy XDG deploy tree moves into ~/.dsh_wsl', async () => {
+    // A scratch home keeps the fixture away from the real deployment (which already
+    // lives at the new root, so a same-name move would be a no-op there).
+    const scratchHome = '/tmp/dsh-wsl-m5c-migration-home'
+    try {
+      const legacyDistro = `${scratchHome}/.local/share/dsh-wsl/${target.name}`
+      await runWsl([
+        '-d',
+        target.name,
+        '--',
+        'bash',
+        '-lc',
+        `mkdir -p '${legacyDistro}' && printf legacy > '${legacyDistro}/marker.txt'`,
+      ])
+      await migrateLegacyDeployRoot({ distro: target.name, homeDir: scratchHome })
+      const moved = await runWsl([
+        '-d',
+        target.name,
+        '--',
+        'bash',
+        '-lc',
+        `test -f '${scratchHome}/.dsh_wsl/${target.name}/marker.txt' && printf MOVED`,
+      ])
+      assert.equal(moved.stdout.toString('utf8').trim(), 'MOVED', 'the legacy tree was renamed over')
+    } finally {
+      await runWsl(['-d', target.name, '--', 'bash', '-lc', `rm -rf '${scratchHome}'`])
+    }
+  })
+
   await check('THE NORMALIZATION: an empty configured distro resolves to the canonical target', async () => {
     // No distro configured: must resolve to the system default and land every deployed
-    // asset in the SAME ~/.local/share/dsh-wsl/<distro>/ tree an explicit connection uses —
+    // asset in the SAME ~/.dsh_wsl/<distro>/ tree an explicit connection uses —
     // not in a trailing-empty-segment sibling directory with its own duplicate deployment.
     const defaultRuntime = createWslRuntime({
       cacheDir,
@@ -259,7 +289,7 @@ try {
       assert.equal(defaultRuntime.distro, target.name, 'the default resolved to the real name')
 
       // The canonical tree holds the helper this connection is actually talking to.
-      const helperOnCanonicalPath = `${state.homeDir}/.local/share/dsh-wsl/${target.name}/helper/wsl-helper.mjs`
+      const helperOnCanonicalPath = `${state.homeDir}/.dsh_wsl/${target.name}/helper/wsl-helper.mjs`
       const probe = await runWsl([
         '-d',
         target.name,
