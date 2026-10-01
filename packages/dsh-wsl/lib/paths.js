@@ -46,6 +46,19 @@ export function windowsToLinux(windowsPath) {
     return rest.length === 0 ? '/' : `/${toForwardSlashes(rest)}`
   }
 
+  // Host-side `path.resolve()` re-roots an absolute Linux path onto the process drive:
+  // `/mnt/d/ws` arrives here as `D:\mnt\d\ws`. Skill discovery does exactly this
+  // (dsh-skill-filesystem resolves the lookup cwd on the host before walking `.git`
+  // through the fs service), so without this undo every project skill silently
+  // disappears under a Linux-path session cwd.
+  // ponytail: a genuinely real Windows directory named `<drive>:\mnt\...` would be
+  // mistranslated by this undo; if that ever matters, gate it on a known-Linux-origin cwd.
+  // `mnt` stays case-sensitive: the mangle preserves the lowercase Linux mount point.
+  const mangled = /^([A-Za-z]):[\\/](mnt(?:[\\/].*)?)$/.exec(windowsPath)
+  if (mangled) {
+    return `/${toForwardSlashes(mangled[2].replace(/[\\/]+$/, ''))}`
+  }
+
   // A drive-qualified path: C:\dir or C:/dir
   const drive = /^([A-Za-z]):(?:[\\/](.*))?$/.exec(windowsPath)
   if (drive) {

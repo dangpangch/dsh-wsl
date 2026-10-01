@@ -387,7 +387,7 @@ ZCode 的范本：连接层上报断连（`ZCode-main/packages/server/src/remote
 | M5a 整 profile 切换到 WSL | **完成** | `tests/m5a-acceptance.mjs` **11/11 通过** |
 | M5b sandbox + UI | **完成** | `tests/m5b-acceptance.mjs` **14/14 通过**；distro 内 bwrap 后端，M5a 的「沙箱只报告不强制」缺口已关闭 |
 | M5c 健壮性收口 | **完成** | `tests/m5c-acceptance.mjs` **11/11 通过**（1 项在无 TLS 出口环境下自报 SKIP）；§4.6.3 三项与 §4.6.7 全部落地，实施记录见「M5c 实施记录」 |
-| M6 Skill/MCP/Plugin 同步 | 未开始 | — |
+| M6 Skill/MCP/Plugin 同步 | **完成** | 调查推翻了「同步管线」设想：seam 合规即同步。`tests/m6-acceptance.mjs` **6/6 通过**，见「M6 实施记录」 |
 | M7 打包与 `install_bundle` | 未开始 | — |
 
 ### 已交付的文件
@@ -427,13 +427,14 @@ tests/
   m3-acceptance.mjs    # 52 项
   m5a-acceptance.mjs   # 11 项
   m5b-acceptance.mjs   # 14 项
-  m5c-acceptance.mjs   # 11 项（含 1 项在无出口环境自报 SKIP）
+  m5c-acceptance.mjs   # 12 项（含 1 项在无出口环境自报 SKIP）
+  m6-acceptance.mjs    # 6 项
 ```
 
-**合计 134 项检查全绿。** 统一跑法：
+**合计 141 项检查全绿。** 统一跑法：
 
 ```powershell
-foreach ($m in @("m1","m2","m3","m5a","m5b","m5c")) { node "tests\$m-acceptance.mjs" }
+foreach ($m in @("m1","m2","m3","m5a","m5b","m5c","m6")) { node "tests\$m-acceptance.mjs" }
 ```
 
 ### M5b 实测确证的事实
@@ -458,6 +459,17 @@ M5c 按审查排期分四个 commit 落地（死连接恢复 → distro 归一�
 - **出口事实更新**：本环境 distro 内对 nodejs.org 的 TLS 也被阻断（`curl (35) unexpected eof`），与 M2 记录的 `registry.npmjs.org` 阻断同类——`push` 默认策略再次被证明是正确选型。会话末期主机侧对 nodejs.org 也出现 TLS 拦截（`SEC_E_WRONG_PRINCIPAL`），因此 spaced-home 检查改为从 canonical 树 `cp -a` 预置、`distro` 策略检查自报 SKIP，整套 m5c 对主机出网零依赖。
 - **部署根统一到 `~/.dsh_wsl/`**：distro 侧所有 dsh-wsl 文件收进一个可见、一条命令可清空的目录——部署树 `~/.dsh_wsl/<distro>/`（node/helper/bwrap，helper 仍按自身位置相对解析 bwrap，整体搬移无损）、供给锁 `~/.dsh_wsl/.<distro>.lock`、测试残渣 `~/.dsh_wsl/.scratch/`。`migrateLegacyDeployRoot` 把旧 XDG 路径 `~/.local/share/dsh-wsl/<distro>` 一次性 rename 进来（同文件系统零成本；旧树缺失或新树已存在时为 no-op），在供给锁内执行。实机迁移已执行，distro home 里 `.local/share/dsh-wsl` 不复存在。/tmp 下的测试文件保持原位——tmpfs 自清且测试 finally 自删。
 - **记录不动（§4.6.7-3）**：一次性 provisioning 子进程仍不被 dispose 追踪——按审查结论维持「只记录」，危害上界是写完部署目录后被 reuse 检查收敛。
+
+### M6 实施记录：调查推翻了原始设想，交付物是接缝合规 + 一处启发式
+
+M0 时代把 M6 想象成「把 skills/MCP/插件资产同步进 distro」的管线。对 asar 内真实实现的调查证明**不需要**：
+
+- **Skills**：`dsh-skill-filesystem` 在存在 `ctx.fs` 时，**全部非 trustedHost 的发现与正文读取都走 fs 接缝**（`listSkillRootEntries`/`readSkillText`/`findProjectRoot`，源码 615/709/807 行）。WSL 模式下它们自动经 distro 执行：用户根 `C:\Users\…\.dsh\skills`、`~/.agents/skills` 被我们的翻译映射到 `/mnt/c/…` 走 drvfs；项目根 `.agents/skills`、`.dsh/skills` 同理。缺失根以 `FS_NOT_FOUND`/`FS_NOT_DIRECTORY` 报告——恰是它 `isAbsentSkillPathError` 的空目录词汇表，端到端吻合。
+- **MCP**：`dsh-mcp-client` 只从 subprocess 接缝借用 `scrubbedParentEnv` 纯函数，**spawn 走 MCP SDK 自己的宿主 child_process**——WSL 模式下 MCP 服务器照常在 Windows 侧运行，零改动。
+- **Plugins**：profile bundle 是宿主 cordis 组合行（从 asar 加载），不经 fs/subprocess 接缝——零改动。trustedHost 的插件内置 skills 走宿主 Node 读取——零改动。
+- **已修的真实缺陷（Linux cwd 项目级 skills 静默丢失）**：skill 发现先用宿主 `path.resolve()` 规范化 cwd，把 Linux 路径 `/mnt/d/ws` 弄成 `D:\mnt\d\ws` 再交给 ctx.fs——不做处理则项目根永远找不到、项目 skills 全部静默消失。`windowsToLinux` 增加**双重错位还原**（`<drive>:\mnt\…` → `/mnt\…`），`mnt` 小写敏感以减少误伤；已知代价（真实的 Windows 目录恰好叫 `D:\mnt\…` 会被误译）以 `ponytail:` 注释钉在代码里。
+- **诚实的边界**：Chokidar 宿主 watch 无法 attach 到翻译后的 Linux 路径（有界重试、不致命）——目录变更失效仍经 tool-fs 发出的 `fs/observed` 事件（emitter 是工具层，provider 无需参与）；代价是外部 IDE/Git 改动对 skills 目录的感知降级为下次发现时刷新。文档宣称的「无重启感知新技能」在 WSL 模式下只对经第一方工具的变更加速。
+- **验收**：`tests/m6-acceptance.mjs` 按 skill-filesystem 的**真实调用序列**（resolve→stat→listDir→stat→processPath/readText）对本仓库 `.agents/skills`（ponytail 在列）与 `C:\Users\13409\.dsh` profile 实测，6/6 通过。
 
 ### M5b 诚实记录的代价与缺口
 
