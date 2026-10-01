@@ -146,6 +146,12 @@ export function createWslRuntime(options) {
         requestTimeoutMs: options.requestTimeoutMs,
       })
       await connection.start()
+      // Transport loss (helper crash, `wsl --shutdown`, distro restart) must invalidate
+      // the cached setup, or every later start() hands back the dead connection forever.
+      connection.onClose(() => {
+        setup = undefined
+        connection = undefined
+      })
       onLog(
         `connected to ${options.distro || 'the default distribution'}: ` +
           `${connection.hello.platform}/${connection.hello.arch} node ${connection.hello.nodeVersion}`,

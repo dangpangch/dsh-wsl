@@ -187,7 +187,12 @@ export class WslFileSystem {
   /** Establish the connection once, reusing it afterwards. */
   connection() {
     this.#pending ??= this.connect()
-    return this.#pending
+    return this.#pending.then((connection) => {
+      if (!connection.closed) return connection
+      // The cached connection died; drop it so the next call reconnects through the runtime.
+      this.#pending = undefined
+      return this.connection()
+    })
   }
 
   /** Release this provider's connection. */
