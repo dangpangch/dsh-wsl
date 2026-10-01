@@ -26,6 +26,7 @@ import {
   ensureRuntime,
   listDistributions,
   runWsl,
+  withProvisionLock,
 } from './connection.js'
 import { WslSandbox } from './sandbox.js'
 import { WslSubprocess } from './subprocess.js'
@@ -135,23 +136,34 @@ export function createWslRuntime(options) {
       }
       homeDir = options.homeDir ?? (await resolveHome({ distro: distroName, user: options.user }))
 
-      const runtime = await ensureRuntime({
-        distro: distroName,
-        user: options.user,
-        homeDir,
-        strategy: runtimeStrategy,
-        cacheDir,
-        onLog,
-      })
-      const deployed = await deployHelper({
-        distro: distroName,
-        user: options.user,
-        homeDir,
-        sourceDir: helperSourceDir,
-      })
-      onLog(`helper deployed (${deployed.helperHash.slice(0, 12)}…)`)
-      onLog('provisioning the sandbox backend')
-      await ensureBwrap({ distro: distroName, user: options.user, homeDir, cacheDir, onLog })
+      // Provisioning writes into one shared deploy tree; two DSH windows (or a leftover
+      // helper from a killed host) connecting to the same distro must not race it.
+      const lockPath = `${homeDir}/.local/share/dsh-wsl/.${distroName}.lock`
+      const provisioned = await withProvisionLock(
+        { distro: distroName, user: options.user, lockPath, onLog },
+        async () => {
+          const runtime = await ensureRuntime({
+            distro: distroName,
+            user: options.user,
+            homeDir,
+            strategy: runtimeStrategy,
+            cacheDir,
+            onLog,
+          })
+          const deployed = await deployHelper({
+            distro: distroName,
+            user: options.user,
+            homeDir,
+            sourceDir: helperSourceDir,
+          })
+          onLog(`helper deployed (${deployed.helperHash.slice(0, 12)}…)`)
+          onLog('provisioning the sandbox backend')
+          await ensureBwrap({ distro: distroName, user: options.user, homeDir, cacheDir, onLog })
+          return { runtime, deployed }
+        },
+      )
+      const runtime = provisioned.runtime
+      const deployed = provisioned.deployed
 
       connection = new WslConnection({
         distro: distroName,

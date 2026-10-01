@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 
 import { createWslRuntime, provideHostServices, HELPER_SOURCE_DIR } from '../packages/dsh-wsl/lib/provider.js'
-import { listDistributions, runWsl } from '../packages/dsh-wsl/lib/connection.js'
+import { listDistributions, runWsl, withProvisionLock } from '../packages/dsh-wsl/lib/connection.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DISTRO = process.env.DSH_WSL_DISTRO || 'debian'
@@ -124,6 +124,49 @@ try {
     assert.equal(state.connection.closed, false)
     await runtime.dispose()
     assert.equal(runtime.status().connected, false)
+  })
+
+  await check('THE LOCK: concurrent provisioning serializes in the distribution', async () => {
+    const lockPath = `${(await runtime.start()).homeDir}/.local/share/dsh-wsl/.${target.name}.lock.m5c`
+    const events = []
+    const work = (name) => async () => {
+      events.push(`start:${name}`)
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      events.push(`end:${name}`)
+    }
+    await Promise.all([
+      withProvisionLock({ distro: target.name, lockPath }, work('a')),
+      withProvisionLock({ distro: target.name, lockPath }, work('b')),
+    ])
+    // Whichever won, its `end` must precede the other's `start` — that is the mutex.
+    const [s1, e1, s2, e2] = events
+    assert.match(s1, /^start:/)
+    assert.equal(
+      e1,
+      s1.replace('start:', 'end:'),
+      `the first section must complete before the second begins: ${events.join(' ')}`,
+    )
+    assert.equal(e2, s2.replace('start:', 'end:'))
+  })
+
+  await check('THE LOCK: a stale lock is stolen, not waited on', async () => {
+    const home = (await runtime.start()).homeDir
+    const lockPath = `${home}/.local/share/dsh-wsl/.${target.name}.lock.m5c-stale`
+    // Backdate the lock past the staleness window, as a killed holder would leave it.
+    await runWsl([
+      '-d',
+      target.name,
+      '--',
+      'bash',
+      '-lc',
+      `mkdir -p '${lockPath}' && touch -d '10 minutes ago' '${lockPath}'`,
+    ])
+    const started = Date.now()
+    await withProvisionLock({ distro: target.name, lockPath }, async () => {})
+    assert.ok(
+      Date.now() - started < 5_000,
+      'the stale lock was stolen immediately instead of timing out',
+    )
   })
 
   await check('THE NORMALIZATION: an empty configured distro resolves to the canonical target', async () => {

@@ -584,12 +584,14 @@ export async function fetchNodeArchive(options) {
   }
 
   await mkdir(cacheDir, { recursive: true })
-  // Publish atomically so a truncated download can never look like a valid cache hit.
-  const staging = `${archivePath}.partial`
-  await writeFile(staging, bytes)
-  await rename(staging, archivePath)
-  return { archivePath, sha256: digest, reused: false }
-}
+    // Publish atomically so a truncated download can never look like a valid cache hit.
+    // The staging name carries the pid: two processes downloading concurrently must not
+    // interleave writes into one shared `.partial` file.
+    const staging = `${archivePath}.${process.pid}.partial`
+    await writeFile(staging, bytes)
+    await rename(staging, archivePath)
+    return { archivePath, sha256: digest, reused: false }
+  }
 
 /**
  * Read a file, returning undefined when it is absent.
@@ -602,6 +604,77 @@ async function readIfPresent(filePath) {
     return await readFile(filePath)
   } catch {
     return undefined
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* provisioning lock                                                          */
+/* -------------------------------------------------------------------------- */
+
+const LOCK_POLL_MS = 500
+const LOCK_STALE_MINUTES = 5
+const LOCK_TIMEOUT_MS = 5 * 60_000
+
+/**
+ * Serialize provisioning of one deploy root across processes.
+ *
+ * `mkdir` is atomic on POSIX, so the lock is just a directory: the winner provisions,
+ * losers poll until it is released. A holder killed mid-provision never releases, so a
+ * lock older than {@link LOCK_STALE_MINUTES} is stolen instead of dead-locking the
+ * distribution.
+ *
+ * @param {object} options
+ * @param {string} options.distro
+ * @param {string} [options.user]
+ * @param {string} options.lockPath absolute Linux path of the lock directory
+ * @param {AbortSignal} [options.signal]
+ * @param {(line: string) => void} [options.onLog]
+ * @param {() => Promise<T>} fn the provisioned work, run while holding the lock
+ * @returns {Promise<T>}
+ * @template T
+ */
+export async function withProvisionLock(options, fn) {
+  const { distro, user, lockPath, signal, onLog = () => {} } = options
+  const deadline = Date.now() + LOCK_TIMEOUT_MS
+
+  for (;;) {
+    const attempt = await runInDistro({
+      distro,
+      user,
+      command: `mkdir ${quote(lockPath)} 2>/dev/null && printf acquired || printf busy`,
+      signal,
+    })
+    if (attempt.stdoutText.trim() === 'acquired') break
+
+    const staleness = await runInDistro({
+      distro,
+      user,
+      command:
+        `[ -n "$(find ${quote(lockPath)} -maxdepth 0 -mmin +${LOCK_STALE_MINUTES} 2>/dev/null)" ]` +
+        ' && printf stale || printf fresh',
+      signal,
+    })
+    if (staleness.stdoutText.trim() === 'stale') {
+      onLog('stale provision lock detected; stealing it')
+      await runInDistro({ distro, user, command: `rm -rf ${quote(lockPath)}`, signal })
+      continue
+    }
+
+    if (Date.now() > deadline) {
+      throw new HelperError(
+        HelperErrorCode.IO_ERROR,
+        `timed out waiting for the provision lock at ${lockPath}`,
+      )
+    }
+    onLog('another process is provisioning this distribution; waiting')
+    await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS))
+  }
+
+  try {
+    return await fn()
+  } finally {
+    // rmdir refuses a stolen/replaced lock, which is the safe outcome.
+    await runInDistro({ distro, user, command: `rmdir ${quote(lockPath)} 2>/dev/null || true`, signal })
   }
 }
 
@@ -780,7 +853,9 @@ export async function ensureBwrap(options) {
       )
     }
     // Publish atomically so a truncated download can never look like a valid cache hit.
-    const staging = `${archivePath}.partial`
+    // The staging name carries the pid: two processes downloading concurrently must not
+    // interleave writes into one shared `.partial` file.
+    const staging = `${archivePath}.${process.pid}.partial`
     await writeFile(staging, bytes)
     await rename(staging, archivePath)
   } else {
