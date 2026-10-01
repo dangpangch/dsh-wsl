@@ -121,8 +121,10 @@ async function runInDistro(options) {
     code: result.code,
     stdout: result.stdout,
     stderr: result.stderr,
-    stdoutText: result.stdout.toString('utf8'),
-    stderrText: result.stderr.toString('utf8'),
+    // wsl.exe's own diagnostics are UTF-16LE on builds where WSL_UTF8 is ignored;
+    // decode with the same dual-decoding as discovery output.
+    stdoutText: decodeWslText(result.stdout),
+    stderrText: decodeWslText(result.stderr),
   }
 }
 
@@ -261,12 +263,16 @@ export class WslConnection {
     if (this.config.distro) args.push('-d', this.config.distro)
     if (this.config.user) args.push('-u', this.config.user)
     // No --cd: it would translate a Windows path and the helper must start in Linux.
+    // One `bash -lc` command with quoted paths — the same discipline as every
+    // provisioning command. wsl.exe reassembles everything after `--` through the
+    // default shell, so a multi-argv launch would mangle a path containing spaces:
+    // Node wraps the element in double quotes, the default shell strips them, and the
+    // inner single quotes survive into the filename it tries to execute.
     args.push(
       '--',
-      this.config.nodePath,
-      this.config.helperPath,
-      '--lease-ms',
-      String(this.config.leaseMs),
+      'bash',
+      '-lc',
+      `${quote(this.config.nodePath)} ${quote(this.config.helperPath)} --lease-ms ${String(this.config.leaseMs)}`,
     )
 
     this.#child = spawn('wsl.exe', args, {
@@ -637,6 +643,10 @@ export async function withProvisionLock(options, fn) {
   const { distro, user, lockPath, signal, onLog = () => {} } = options
   const deadline = Date.now() + LOCK_TIMEOUT_MS
 
+  // The lock `mkdir` itself must stay bare to stay atomic, so create its parents first.
+  const lockParent = lockPath.slice(0, lockPath.lastIndexOf('/'))
+  await runInDistro({ distro, user, command: `mkdir -p ${quote(lockParent)}`, signal })
+
   for (;;) {
     const attempt = await runInDistro({
       distro,
@@ -766,14 +776,18 @@ export async function ensureRuntime(options) {
     }
   } else {
     onLog(`downloading ${NODE_ARCHIVE} inside ${distro}`)
+    // wsl.exe reassembles the `bash -lc` argument through the default shell, which
+    // expands local `$var`s to empty before the real shell runs (probe-verified, see
+    // PLAN §4.6.3). Every path here is therefore a host-computed quoted literal —
+    // the script deliberately contains no shell variables.
+    const archivePath = `${runtimeDir}/${NODE_ARCHIVE}`
     const command = [
       `set -e`,
       `mkdir -p ${quote(runtimeDir)}`,
-      `tmp=$(mktemp -d)`,
-      `curl -fsSL ${quote(nodeArchiveUrl())} -o "$tmp/${NODE_ARCHIVE}"`,
-      `printf '%s  %s\\n' ${quote(NODE_SHA256)} "$tmp/${NODE_ARCHIVE}" | sha256sum -c -`,
-      `tar -xJ -C ${quote(runtimeDir)} --strip-components=1 -f "$tmp/${NODE_ARCHIVE}"`,
-      `rm -rf "$tmp"`,
+      `curl -fsSL ${quote(nodeArchiveUrl())} -o ${quote(archivePath)}`,
+      `printf '%s  %s\\n' ${quote(NODE_SHA256)} ${quote(archivePath)} | sha256sum -c -`,
+      `tar -xJ -C ${quote(runtimeDir)} --strip-components=1 -f ${quote(archivePath)}`,
+      `rm -f ${quote(archivePath)}`,
       `echo DSH_WSL_INSTALLED`,
     ].join('\n')
     const result = await runInDistro({ distro, user, command, signal })

@@ -21,7 +21,13 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 
 import { createWslRuntime, provideHostServices, HELPER_SOURCE_DIR } from '../packages/dsh-wsl/lib/provider.js'
-import { listDistributions, runWsl, withProvisionLock } from '../packages/dsh-wsl/lib/connection.js'
+import {
+  ensureRuntime,
+  listDistributions,
+  runWsl,
+  withProvisionLock,
+} from '../packages/dsh-wsl/lib/connection.js'
+import { nodeArchiveUrl } from '../packages/dsh-wsl/lib/runtime.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DISTRO = process.env.DSH_WSL_DISTRO || 'debian'
@@ -167,6 +173,77 @@ try {
       Date.now() - started < 5_000,
       'the stale lock was stolen immediately instead of timing out',
     )
+  })
+
+  await check('THE TRANSPORT FACT: local shell vars do not survive wsl.exe reassembly', async () => {
+    // The variable-free provisioning scripts DEPEND on this platform quirk (PLAN §4.6.3).
+    // If a WSL update fixes the reassembly, this check flags that the dependency changed.
+    const probe = await runWsl(['-d', target.name, '--', 'bash', '-lc', 'x=hi; printf %s "$x"'])
+    assert.equal(
+      probe.stdout.toString('utf8').trim(),
+      '',
+      'local vars now survive; the variable-free script constraint may be lifted',
+    )
+  })
+
+  await check('THE STRATEGY: the distro strategy installs Node with a variable-free script', async () => {
+    // A scratch home the reuse check cannot hit, so the in-distro download really runs.
+    // Needs distro egress to nodejs.org; where TLS is blocked (the documented reason
+    // `push` is the default) the check reports itself skipped instead of failing.
+    const egress = await runWsl([
+      '-d',
+      target.name,
+      '--',
+      'bash',
+      '-lc',
+      `curl -fsSL --max-time 8 -o /dev/null ${nodeArchiveUrl()} && printf reachable || printf blocked`,
+    ])
+    if (egress.stdout.toString('utf8').trim() !== 'reachable') {
+      console.log('  SKIP  THE STRATEGY (no TLS egress to nodejs.org from the distro)')
+      passes++
+      return
+    }
+    const scratchHome = '/tmp/dsh-wsl-m5c-distro-home'
+    try {
+      const result = await ensureRuntime({
+        distro: target.name,
+        homeDir: scratchHome,
+        strategy: 'distro',
+        cacheDir,
+      })
+      assert.match(result.version, /^v22\./)
+    } finally {
+      await runWsl(['-d', target.name, '--', 'bash', '-lc', `rm -rf '${scratchHome}'`])
+    }
+  })
+
+  await check('THE LAUNCH: a home directory containing spaces survives the round trip', async () => {
+    const canonical = (await runtime.start()).homeDir
+    const spacedHome = '/tmp/dsh-wsl m5c spaced home'
+    const spacedRuntime = createWslRuntime({
+      distro: target.name,
+      homeDir: spacedHome,
+      cacheDir,
+      helperSourceDir: HELPER_SOURCE_DIR,
+    })
+    try {
+      // Pre-seed the spaced tree from the canonical deployment: what this check exercises
+      // is the spaced-path LAUNCH, and provisioning a fresh tree would need host egress.
+      await runWsl([
+        '-d',
+        target.name,
+        '--',
+        'bash',
+        '-lc',
+        `mkdir -p '${spacedHome}/.local/share/dsh-wsl' && ` +
+          `cp -a '${canonical}/.local/share/dsh-wsl/${target.name}' '${spacedHome}/.local/share/dsh-wsl/'`,
+      ])
+      const state = await spacedRuntime.start()
+      assert.ok(state.connection.hello.pid > 0, 'the helper launched from the spaced path')
+    } finally {
+      await spacedRuntime.dispose()
+      await runWsl(['-d', target.name, '--', 'bash', '-lc', `rm -rf '${spacedHome}'`])
+    }
   })
 
   await check('THE NORMALIZATION: an empty configured distro resolves to the canonical target', async () => {
